@@ -75,13 +75,13 @@
   
 - path: output/ad.mrs
   format: mrs
-  behavior: domain
+  behavior: classical
   upstream: &ad_upstream
     ad:
       type: http
       url: https://github.com/Harrykane-der/mihomo-rules/raw/refs/heads/main/ad.yaml
       format: yaml
-      behavior: classical
+      behavior: domain
 
 - path: output/ad.yaml
   format: yaml
