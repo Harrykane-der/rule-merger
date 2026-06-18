@@ -138,12 +138,12 @@
 - path: output/adblock_ip.json
   format: json
   behavior: sing-box
-  upstream: *ablock_ip_upstream
+  upstream: *adblock_ip_upstream
 
 - path: output/adblock_ip.srs
   format: srs
   behavior: sing-box
-  upstream: *ablock_ip_upstream
+  upstream: *adblock_ip_upstream
 
 # direct
 - path: output/direct.mrs
