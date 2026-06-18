@@ -580,6 +580,12 @@
       url: https://ruleset.skk.moe/Clash/domainset/clash_fake_ip_filter.txt
       format: text
       behavior: domain
+    DustinWin_fake_ip_filter:
+      type: http
+      url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/fakeip-filter.mrs
+      format: mrs
+      behavior: domain
+    
 
 - path: output/fakeip-filter.yaml
   format: yaml
