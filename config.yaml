@@ -83,10 +83,10 @@
       url: https://ruleset.skk.moe/Clash/domainset/reject.txt
       format: text
       behavior: domain
-    :
+    adrules:
       type: http
       url: https://github.com/echs-top/proxy/raw/refs/heads/main/mrs/domain/ads.mrs
-      format: text
+      format: mrs
       behavior: domain
 
 - path: output/ablock.yaml
