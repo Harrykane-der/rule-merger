@@ -22,7 +22,7 @@ logging.basicConfig(
 DOMAIN_PATTERN = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$')
 MIHOMO_PATH = 'mihomo'
 SING_BOX_PATH = 'sing-box'
-SING_BOX_RULESET_VERSION = 4
+SING_BOX_RULESET_VERSION = 5
 MAX_WORKERS = 12
 REQUEST_TIMEOUT = 15
 RETRY_TIMES = 3
@@ -187,7 +187,6 @@ class RulesMerger:
         result = transformer(rule)
         return result if isinstance(result, list) else [result] if result else []
 
-    # ==================== 原脚本所有方法（完整保留） ====================
     def _clean_rule(self, rule: str) -> str:
         rule = rule.strip()
         if rule.startswith('#') or not rule:
@@ -275,25 +274,40 @@ class RulesMerger:
             json.dump(rule_set, f, ensure_ascii=False, indent=2)
 
     def _to_sing_box_rules(self, rules: List[str], behavior: str) -> List[Dict[str, Any]]:
-        if behavior == 'sing-box':
-            sing_box_rules = []
-            for rule in rules:
-                parsed = self._parse_sing_box_rule(rule)
-                if parsed:
-                    sing_box_rules.append(parsed)
-            return sing_box_rules
-
-        sing_box_rule = {
-            'domain': [], 'domain_suffix': [], 'domain_keyword': [],
-            'domain_regex': [], 'ip_cidr': []
+        """增强版：自动将所有规则分类合并到一个 rule 对象中"""
+        merged = {
+            'domain': [],
+            'domain_suffix': [],
+            'domain_keyword': [],
+            'domain_regex': [],
+            'ip_cidr': []
         }
-        for rule in rules:
-            converted = self._to_sing_box_item(rule, behavior)
-            if converted:
-                key, value = converted
-                sing_box_rule[key].append(value)
 
-        compact_rule = {k: sorted(set(v)) for k, v in sing_box_rule.items() if v}
+        if behavior == 'sing-box':
+            for rule_str in rules:
+                try:
+                    rule_dict = json.loads(rule_str) if isinstance(rule_str, str) else rule_str
+                    for key in merged.keys():
+                        if key in rule_dict:
+                            val = rule_dict[key]
+                            if isinstance(val, list):
+                                merged[key].extend(val)
+                            elif val:
+                                merged[key].append(val)
+                except:
+                    continue
+        else:
+            for rule in rules:
+                converted = self._to_sing_box_item(rule, behavior)
+                if converted:
+                    key, value = converted
+                    if isinstance(value, list):
+                        merged[key].extend(value)
+                    else:
+                        merged[key].append(value)
+
+        # 去重 + 排序
+        compact_rule = {k: sorted(set(v)) for k, v in merged.items() if v}
         return [compact_rule] if compact_rule else []
 
     def _to_sing_box_item(self, rule: str, behavior: str) -> Optional[tuple]:
