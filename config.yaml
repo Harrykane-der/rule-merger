@@ -335,11 +335,6 @@
   format: mrs
   behavior: domain
   upstream: &ai_upstream
-    skk_ai:
-      type: http
-      url: https://ruleset.skk.moe/Clash/non_ip/ai.txt
-      format: text
-      behavior: classical
     DustinWin_ai:
       type: http
       url: https://github.com/DustinWin/domain-list-custom/releases/download/domains/ai.list
