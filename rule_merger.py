@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 import time
 
-# 配置日志
+# ==================== 配置 ====================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -23,9 +23,9 @@ DOMAIN_PATTERN = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0
 MIHOMO_PATH = 'mihomo'
 SING_BOX_PATH = 'sing-box'
 SING_BOX_RULESET_VERSION = 4
-MAX_WORKERS = 12          # 并行下载线程数，可根据网络调整
+MAX_WORKERS = 12
 REQUEST_TIMEOUT = 15
-RETRY_TIMES = 2
+RETRY_TIMES = 3
 
 class RulesMerger:
     def __init__(self, config_path: str = 'config.yaml'):
@@ -33,8 +33,9 @@ class RulesMerger:
         self.config = self._load_config(config_path)
         self.mihomo_path = MIHOMO_PATH
         self.sing_box_path = SING_BOX_PATH
+        
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'Rule-Merger/Optimized'})
+        self.session.headers.update({'User-Agent': 'Rule-Merger-Optimized/1.0'})
 
         self._transformers = {
             ('classical', 'ipcidr'): self._classical_to_ipcidr,
@@ -46,16 +47,18 @@ class RulesMerger:
             ('ipcidr', 'sing-box'): self._ipcidr_to_sing_box,
             ('sing-box', 'classical'): self._sing_box_to_classical,
             ('sing-box', 'domain'): self._sing_box_to_domain,
-            ('sing-box', 'ipcidr'): self._sing_box_to_ipcidr,
+            ('sing-box', 'ipcidr'): self._sing_box_to_ipcidr
         }
 
     def _load_config(self, path: str) -> list:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
+            if isinstance(config, dict):
+                config = [config]
             if not isinstance(config, list):
-                self.logger.warning("config.yaml 应为列表格式，已尝试兼容")
-                config = [config] if isinstance(config, dict) else []
+                self.logger.error("config.yaml 必须是列表或单个配置对象")
+                return []
             return config
         except Exception as e:
             self.logger.error(f"配置文件加载失败: {e}")
@@ -68,7 +71,6 @@ class RulesMerger:
 
     @lru_cache(maxsize=64)
     def _fetch_http_rules(self, url: str, rule_format: str, behavior: str = 'classical') -> List[str]:
-        """带重试的规则下载"""
         for attempt in range(RETRY_TIMES + 1):
             try:
                 resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
@@ -84,6 +86,7 @@ class RulesMerger:
     def _parse_response(self, response, rule_format: str, behavior: str, url: str) -> List[str]:
         if rule_format == 'json':
             return self._read_sing_box_source(response.text)
+
         if rule_format == 'srs':
             tmp_path = self._make_temp_path('.srs')
             try:
@@ -94,7 +97,7 @@ class RulesMerger:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
 
-        content_type = response.headers.get('content-type', '')
+        content_type = response.headers.get('content-type', '').lower()
         is_yaml = (rule_format == 'yaml') or (
             rule_format not in ('mrs', 'text', 'json', 'srs') and
             ('yaml' in content_type or url.lower().endswith(('.yml', '.yaml')))
@@ -113,10 +116,9 @@ class RulesMerger:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
 
-        return [line for line in response.text.splitlines() if line.strip()]
+        return [line.strip() for line in response.text.splitlines() if line.strip()]
 
     def _process_source_concurrent(self, upstream: Dict, target_behavior: str) -> List[str]:
-        """并行处理所有上游源"""
         all_rules = []
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_source = {
@@ -128,7 +130,7 @@ class RulesMerger:
                 try:
                     rules = future.result()
                     all_rules.extend(rules)
-                    self.logger.info(f"完成源 {name}: {len(rules)} 条规则")
+                    self.logger.info(f"✓ 完成源 {name}: {len(rules)} 条")
                 except Exception as e:
                     self.logger.error(f"处理源 {name} 失败: {e}")
         return all_rules
@@ -163,7 +165,6 @@ class RulesMerger:
                 converted.extend(transformed)
         return converted
 
-    # 以下方法保持原高质量实现（仅少量微调）
     def _transform(self, rule: str, source_behavior: str, target_behavior: str) -> List[str]:
         if not rule:
             return []
@@ -186,11 +187,375 @@ class RulesMerger:
         result = transformer(rule)
         return result if isinstance(result, list) else [result] if result else []
 
-    # ...（保留原脚本中所有转换、验证、读写方法）
-    # 为节省篇幅，这里不再全部重复粘贴 _classical_to_xxx、_validate_xxx、_read_mrs_file 等方法
-    # 你可以直接复制原脚本对应部分替换，或告诉我需要单独优化哪个方法
+    # ==================== 原脚本所有方法（完整保留） ====================
+    def _clean_rule(self, rule: str) -> str:
+        rule = rule.strip()
+        if rule.startswith('#') or not rule:
+            return ''
+        parts = re.split(r'\s+#', rule, maxsplit=1)
+        return parts[0].strip()
+
+    def _read_local_rules(self, path: str, rule_format: str, behavior: str = 'classical') -> List[str]:
+        try:
+            if rule_format == 'mrs':
+                return self._read_mrs_file(path, behavior)
+            if rule_format == 'srs':
+                return self._read_srs_file(path)
+
+            with open(path, 'r', encoding='utf-8') as f:
+                if rule_format == 'json':
+                    return self._read_sing_box_source(f.read())
+                if rule_format == 'yaml':
+                    data = yaml.safe_load(f)
+                    return self._extract_yaml_rules(data, path)
+                return [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            self.logger.error(f"读取本地规则失败 {path}: {e}")
+            return []
+
+    def _extract_yaml_rules(self, data: Any, source: str) -> List[str]:
+        if data is None:
+            return []
+        if isinstance(data, dict):
+            payload = data.get('payload')
+            if isinstance(payload, list):
+                return payload
+            return []
+        if isinstance(data, list):
+            return data
+        return []
+
+    def _classical_to_ipcidr(self, rule: str) -> Optional[str]:
+        parts = rule.split(',')
+        if len(parts) < 2:
+            return None
+        suffix = parts[0].strip()
+        ipcidr = parts[1].strip()
+        if suffix not in ('IP-CIDR', 'IP-CIDR6'):
+            return None
+        return self._validate_ipcidr_rule(ipcidr)
+
+    def _classical_to_domain(self, rule: str) -> Optional[str]:
+        parts = rule.split(',')
+        if len(parts) < 2:
+            return None
+        suffix = parts[0].strip()
+        domain = parts[1].strip()
+        if not DOMAIN_PATTERN.match(domain):
+            return None
+        if suffix == 'DOMAIN':
+            return domain
+        elif suffix == 'DOMAIN-SUFFIX':
+            return '+.' + domain
+        return None
+
+    def _ipcidr_to_classical(self, rule: str) -> Optional[str]:
+        ver = self._get_ipcidr_version(rule)
+        if ver == 6:
+            return "IP-CIDR6," + rule
+        if ver == 4:
+            return "IP-CIDR," + rule
+        return None
+
+    def _domain_to_classical(self, rule: str) -> Optional[str]:
+        if rule.startswith('+.'):
+            suffix = rule[2:]
+            if DOMAIN_PATTERN.match(suffix):
+                return f"DOMAIN-SUFFIX,{suffix}"
+        elif DOMAIN_PATTERN.match(rule):
+            return f"DOMAIN,{rule}"
+        return None
+
+    def _write_sing_box_source(self, output_path: str, rules: List[str], behavior: str, version: int = SING_BOX_RULESET_VERSION):
+        rule_set = {
+            'version': version,
+            'rules': self._to_sing_box_rules(rules, behavior)
+        }
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(rule_set, f, ensure_ascii=False, indent=2)
+
+    def _to_sing_box_rules(self, rules: List[str], behavior: str) -> List[Dict[str, Any]]:
+        if behavior == 'sing-box':
+            sing_box_rules = []
+            for rule in rules:
+                parsed = self._parse_sing_box_rule(rule)
+                if parsed:
+                    sing_box_rules.append(parsed)
+            return sing_box_rules
+
+        sing_box_rule = {
+            'domain': [], 'domain_suffix': [], 'domain_keyword': [],
+            'domain_regex': [], 'ip_cidr': []
+        }
+        for rule in rules:
+            converted = self._to_sing_box_item(rule, behavior)
+            if converted:
+                key, value = converted
+                sing_box_rule[key].append(value)
+
+        compact_rule = {k: sorted(set(v)) for k, v in sing_box_rule.items() if v}
+        return [compact_rule] if compact_rule else []
+
+    def _to_sing_box_item(self, rule: str, behavior: str) -> Optional[tuple]:
+        if behavior == 'domain':
+            if rule.startswith('+.'):
+                return 'domain_suffix', rule[2:]
+            return 'domain', rule
+        if behavior == 'ipcidr':
+            return 'ip_cidr', rule
+        if behavior != 'classical':
+            return None
+        parts = [part.strip() for part in rule.split(',')]
+        if len(parts) < 2:
+            return None
+        rule_type = parts[0]
+        value = parts[1]
+        mapping = {
+            'DOMAIN': 'domain',
+            'DOMAIN-SUFFIX': 'domain_suffix',
+            'DOMAIN-KEYWORD': 'domain_keyword',
+            'DOMAIN-REGEX': 'domain_regex',
+            'IP-CIDR': 'ip_cidr',
+            'IP-CIDR6': 'ip_cidr'
+        }
+        target_key = mapping.get(rule_type)
+        if not target_key:
+            return None
+        return target_key, value
+
+    def _read_sing_box_source(self, content: str) -> List[str]:
+        try:
+            data = json.loads(content.lstrip('\ufeff'))
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, dict):
+            return []
+        rules = data.get('rules', [])
+        if not isinstance(rules, list):
+            return []
+        normalized_rules = []
+        for rule in rules:
+            normalized = self._normalize_sing_box_rule(rule)
+            if normalized:
+                normalized_rules.append(normalized)
+        return normalized_rules
+
+    def _normalize_sing_box_rule(self, rule: Any) -> Optional[str]:
+        if not isinstance(rule, dict):
+            return None
+        return json.dumps(rule, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+    def _parse_sing_box_rule(self, rule: str) -> Optional[Dict]:
+        try:
+            parsed = json.loads(rule)
+            return parsed if isinstance(parsed, dict) else None
+        except:
+            return None
+
+    def _validate_sing_box_rule(self, rule: str) -> Optional[str]:
+        parsed = self._parse_sing_box_rule(rule)
+        if parsed is None:
+            return None
+        return self._normalize_sing_box_rule(parsed)
+
+    def _classical_to_sing_box(self, rule: str) -> Optional[str]:
+        if not self._validate_classical_rule(rule):
+            return None
+        item = self._to_sing_box_item(rule, 'classical')
+        if not item:
+            return None
+        key, value = item
+        return self._normalize_sing_box_rule({key: [value]})
+
+    def _domain_to_sing_box(self, rule: str) -> Optional[str]:
+        if not self._validate_domain_rule(rule):
+            return None
+        item = self._to_sing_box_item(rule, 'domain')
+        if not item:
+            return None
+        key, value = item
+        return self._normalize_sing_box_rule({key: [value]})
+
+    def _ipcidr_to_sing_box(self, rule: str) -> Optional[str]:
+        if not self._validate_ipcidr_rule(rule):
+            return None
+        item = self._to_sing_box_item(rule, 'ipcidr')
+        if not item:
+            return None
+        key, value = item
+        return self._normalize_sing_box_rule({key: [value]})
+
+    def _sing_box_to_domain(self, rule: str) -> List[str]:
+        parsed = self._parse_sing_box_rule(rule)
+        if parsed is None:
+            return []
+        rules = []
+        for item in self._iter_sing_box_rules(parsed):
+            for domain in self._as_list(item.get('domain')):
+                if isinstance(domain, str) and self._validate_domain_rule(domain):
+                    rules.append(domain)
+            for suffix in self._as_list(item.get('domain_suffix')):
+                if isinstance(suffix, str):
+                    suffix = suffix[1:] if suffix.startswith('.') else suffix
+                    domain_rule = f"+.{suffix}"
+                    if self._validate_domain_rule(domain_rule):
+                        rules.append(domain_rule)
+        return rules
+
+    def _sing_box_to_ipcidr(self, rule: str) -> List[str]:
+        parsed = self._parse_sing_box_rule(rule)
+        if parsed is None:
+            return []
+        rules = []
+        for item in self._iter_sing_box_rules(parsed):
+            for ipcidr in self._as_list(item.get('ip_cidr')):
+                if isinstance(ipcidr, str) and self._validate_ipcidr_rule(ipcidr):
+                    rules.append(ipcidr)
+        return rules
+
+    def _sing_box_to_classical(self, rule: str) -> List[str]:
+        parsed = self._parse_sing_box_rule(rule)
+        if parsed is None:
+            return []
+        rules = []
+        for item in self._iter_sing_box_rules(parsed):
+            for domain in self._as_list(item.get('domain')):
+                if isinstance(domain, str):
+                    classical_rule = f"DOMAIN,{domain}"
+                    if self._validate_classical_rule(classical_rule):
+                        rules.append(classical_rule)
+            for suffix in self._as_list(item.get('domain_suffix')):
+                if isinstance(suffix, str):
+                    suffix = suffix[1:] if suffix.startswith('.') else suffix
+                    classical_rule = f"DOMAIN-SUFFIX,{suffix}"
+                    if self._validate_classical_rule(classical_rule):
+                        rules.append(classical_rule)
+            for keyword in self._as_list(item.get('domain_keyword')):
+                if isinstance(keyword, str):
+                    rules.append(f"DOMAIN-KEYWORD,{keyword}")
+            for regex_rule in self._as_list(item.get('domain_regex')):
+                if isinstance(regex_rule, str):
+                    rules.append(f"DOMAIN-REGEX,{regex_rule}")
+            for ipcidr in self._as_list(item.get('ip_cidr')):
+                if not isinstance(ipcidr, str):
+                    continue
+                classical_rule = f"IP-CIDR6,{ipcidr}" if ':' in ipcidr else f"IP-CIDR,{ipcidr}"
+                if self._validate_classical_rule(classical_rule):
+                    rules.append(classical_rule)
+        return rules
+
+    def _iter_sing_box_rules(self, rule: Dict) -> List[Dict]:
+        rules = [rule]
+        if rule.get('type') == 'logical':
+            for nested in self._as_list(rule.get('rules')):
+                if isinstance(nested, dict):
+                    rules.extend(self._iter_sing_box_rules(nested))
+        return rules
+
+    def _as_list(self, value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    def _validate_classical_rule(self, rule: str) -> Optional[str]:
+        try:
+            parts = rule.split(',')
+            if len(parts) < 2:
+                return None
+            rule_type = parts[0]
+            value = parts[1].strip()
+            rule = ','.join(part.strip() for part in parts)
+            if rule_type in {'DOMAIN', 'DOMAIN-SUFFIX'}:
+                return rule if DOMAIN_PATTERN.match(value) else None
+            elif rule_type == 'IP-CIDR':
+                return rule if self._get_ipcidr_version(value) == 4 else None
+            elif rule_type == 'IP-CIDR6':
+                return rule if self._get_ipcidr_version(value) == 6 else None
+            return rule
+        except:
+            return None
+
+    def _validate_ipcidr_rule(self, rule: str) -> Optional[str]:
+        if self._get_ipcidr_version(rule):
+            return rule
+        return None
+
+    def _get_ipcidr_version(self, rule: str) -> Optional[int]:
+        try:
+            return ipaddress.ip_network(rule, strict=False).version
+        except ValueError:
+            return None
+
+    def _validate_domain_rule(self, rule: str) -> Optional[str]:
+        domain = rule[2:] if rule.startswith('+.') else rule
+        if DOMAIN_PATTERN.match(domain):
+            return rule
+        return None
+
+    def _read_mrs_file(self, input_path: str, behavior: str) -> List[str]:
+        if not self.mihomo_path:
+            return []
+        output_path = self._make_temp_path('.txt')
+        try:
+            cmd = [self.mihomo_path, 'convert-ruleset', behavior, 'mrs', input_path, output_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                return []
+            with open(output_path, 'r', encoding='utf-8') as f:
+                return f.read().splitlines()
+        except:
+            return []
+        finally:
+            if os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except:
+                    pass
+
+    def _read_srs_file(self, input_path: str) -> List[str]:
+        if not self.sing_box_path:
+            return []
+        output_path = self._make_temp_path('.json')
+        try:
+            cmd = [self.sing_box_path, 'rule-set', 'decompile', '--output', output_path, input_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                return []
+            with open(output_path, 'r', encoding='utf-8') as f:
+                return self._read_sing_box_source(f.read())
+        except:
+            return []
+        finally:
+            if os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except:
+                    pass
+
+    def _convert_to_mrs(self, input_path: str, output_path: str, behavior: str) -> bool:
+        if not self.mihomo_path:
+            return False
+        try:
+            cmd = [self.mihomo_path, 'convert-ruleset', behavior, 'text', input_path, output_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return result.returncode == 0
+        except:
+            return False
+
+    def _convert_to_srs(self, input_path: str, output_path: str) -> bool:
+        if not self.sing_box_path:
+            return False
+        try:
+            cmd = [self.sing_box_path, 'rule-set', 'compile', '--output', output_path, input_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return result.returncode == 0
+        except:
+            return False
 
     def merge_rules(self) -> None:
+        start_time = time.time()
         for cfg in self.config:
             if 'upstream' not in cfg or not cfg.get('path'):
                 continue
@@ -200,14 +565,12 @@ class RulesMerger:
             target_behavior = cfg.get('behavior', default_behavior)
 
             if target_format == 'mrs' and target_behavior not in ('domain', 'ipcidr'):
-                self.logger.warning(f"{cfg.get('path')} mrs 仅支持 domain/ipcidr")
+                self.logger.warning(f"{cfg.get('path')} mrs仅支持 domain/ipcidr")
                 continue
 
-            self.logger.info(f"开始生成: {cfg['path']} ({target_behavior})")
-            
+            self.logger.info(f"🚀 开始生成: {cfg['path']} ({target_behavior})")
             merged = self._process_source_concurrent(cfg['upstream'], target_behavior)
             
-            # 去重 + 排序
             merged = sorted(set(filter(None, merged)))
             
             self._write_rules(
@@ -217,25 +580,64 @@ class RulesMerger:
                 target_behavior,
                 cfg.get('version', SING_BOX_RULESET_VERSION)
             )
+        
+        self.logger.info(f"🎉 全部完成！总耗时: {time.time() - start_time:.1f} 秒")
 
-    # 保留原 _write_rules、_log_generated_rule_file、_write_sing_box_source、_to_sing_box_rules 等方法不变
-    # （完整版中我会全部包含）
+    def _write_rules(self, output_path: str, rules: List[str], rule_format: str = 'yaml',
+                     behavior: str = 'classical', version: int = SING_BOX_RULESET_VERSION) -> None:
+        try:
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
-    def _clean_rule(self, rule: str) -> str:
-        rule = rule.strip()
-        if rule.startswith('#') or not rule:
-            return ''
-        parts = re.split(r'\s+#', rule, maxsplit=1)
-        return parts[0].strip()
+            if rule_format == 'mrs':
+                tmp_path = self._make_temp_path('.tmp')
+                self._write_rules(tmp_path, rules, 'text', behavior, version)
+                try:
+                    if self._convert_to_mrs(tmp_path, output_path, behavior):
+                        self._log_generated_rule_file('mrs', output_path, len(rules))
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                return
 
-    # ... 其余方法（_read_local_rules, _extract_yaml_rules, _validate_*, _read_mrs_file, _convert_to_mrs 等）
-    # 请从原脚本复制这些方法到此处，我已确保兼容
+            if rule_format == 'srs':
+                tmp_path = self._make_temp_path('.json')
+                self._write_sing_box_source(tmp_path, rules, behavior, version)
+                try:
+                    if self._convert_to_srs(tmp_path, output_path):
+                        self._log_generated_rule_file('srs', output_path, len(rules))
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                return
+
+            if rule_format == 'json':
+                self._write_sing_box_source(output_path, rules, behavior, version)
+                self._log_generated_rule_file('json', output_path, len(rules))
+                return
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                if not output_path.endswith('.tmp'):
+                    f.write(f"# 更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"# 规则数量: {len(rules)}\n")
+                if rule_format == 'yaml':
+                    yaml_str = yaml.dump({'payload': rules}, allow_unicode=True, indent=2,
+                                       default_flow_style=False, sort_keys=False)
+                    f.write(yaml_str.replace('\n-', '\n  -'))
+                else:
+                    f.write('\n'.join(rules))
+            if not output_path.endswith('.tmp'):
+                self._log_generated_rule_file(rule_format, output_path, len(rules))
+        except Exception as e:
+            self.logger.error(f"写入失败 {output_path}: {e}")
+
+    def _log_generated_rule_file(self, rule_format: str, output_path: str, rule_count: int):
+        self.logger.info(f"✅ 已生成 {rule_format} 文件: {output_path} ({rule_count} 条)")
 
 def main():
-    start = time.time()
     merger = RulesMerger('config.yaml')
     merger.merge_rules()
-    self.logger.info(f"全部规则合并完成，总耗时: {time.time() - start:.1f} 秒")
 
 if __name__ == '__main__':
     main()
