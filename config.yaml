@@ -583,7 +583,7 @@
       type: http
       url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/fakeip-filter.list
       format: text
-      behavior: domain
+      behavior: classical
     QuixoticHeart_fake_ip_filter:
       type: http
       url: https://github.com/QuixoticHeart/rule-set/raw/refs/heads/ruleset/meta/domain/fake-ip-filter.list
