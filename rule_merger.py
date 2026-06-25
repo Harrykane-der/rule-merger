@@ -19,9 +19,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# 支持 Clash 通配符域名：*.example.com、*.*.example.com、example.com 等
+# 增强正则：支持任意位置、任意数量的 * 通配符（包括 .stun.*.*.*.*.*）
 DOMAIN_PATTERN = re.compile(
-    r'^(?:\*|\*\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)(?:\.(?:\*|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?))*\( |^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)* \)'
+    r'^(?:[a-zA-Z0-9*](?:[a-zA-Z0-9*-]*[a-zA-Z0-9*])?)(?:\.(?:[a-zA-Z0-9*](?:[a-zA-Z0-9*-]*[a-zA-Z0-9*])?))*$'
 )
 
 MIHOMO_PATH = 'mihomo'
@@ -229,7 +229,7 @@ class RulesMerger:
             return data
         return []
 
-    # ==================== 通配符优化核心函数 ====================
+    # ==================== 通配符核心函数 ====================
 
     def _classical_to_domain(self, rule: str) -> Optional[str]:
         parts = rule.split(',')
@@ -249,14 +249,10 @@ class RulesMerger:
     def _domain_to_classical(self, rule: str) -> Optional[str]:
         if rule.startswith('+.'):
             suffix = rule[2:]
-            if suffix.startswith('*.'):
-                return f"DOMAIN-SUFFIX,{suffix[2:]}"
             return f"DOMAIN-SUFFIX,{suffix}"
-        elif rule.startswith('*.') or '*' in rule:
+        if '*' in rule or self._validate_domain_rule(rule):
             if rule.startswith('*.'):
                 return f"DOMAIN-SUFFIX,{rule[2:]}"
-            return f"DOMAIN,{rule}"
-        elif self._validate_domain_rule(rule):
             return f"DOMAIN,{rule}"
         return None
 
@@ -265,7 +261,7 @@ class RulesMerger:
             if rule.startswith('+.'):
                 return 'domain_suffix', rule[2:]
             if rule.startswith('*.'):
-                return 'domain_suffix', rule[2:]   # *.xboxlive.com → domain_suffix: xboxlive.com
+                return 'domain_suffix', rule[2:]
             return 'domain', rule
         if behavior == 'ipcidr':
             return 'ip_cidr', rule
@@ -316,8 +312,6 @@ class RulesMerger:
             return rule
         except:
             return None
-
-    # ==================== 其余原有函数保持不变 ====================
 
     def _classical_to_ipcidr(self, rule: str) -> Optional[str]:
         parts = rule.split(',')
@@ -651,7 +645,6 @@ class RulesMerger:
                     self._log_generated_rule_file('json', output_path, len(rules))
                     return
 
-            # YAML 输出
             with open(output_path, 'w', encoding='utf-8') as f:
                 if not output_path.endswith('.tmp'):
                     f.write(f"# 更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
