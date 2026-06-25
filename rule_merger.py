@@ -225,6 +225,7 @@ class RulesMerger:
             return data
         return []
 
+    # ==================== 转换方法（保持不变） ====================
     def _classical_to_ipcidr(self, rule: str) -> Optional[str]:
         parts = rule.split(',')
         if len(parts) < 2:
@@ -574,7 +575,6 @@ class RulesMerger:
                 continue
 
             target_format = cfg.get('format', 'yaml')
-            # 修改重点：YAML 默认使用 domain 行为
             default_behavior = 'sing-box' if target_format in ('json', 'srs') else 'domain'
             target_behavior = cfg.get('behavior', default_behavior)
 
@@ -604,47 +604,47 @@ class RulesMerger:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
-            if rule_format == 'mrs':
-                tmp_path = self._make_temp_path('.tmp')
-                self._write_rules(tmp_path, rules, 'text', behavior, version)
-                try:
-                    if self._convert_to_mrs(tmp_path, output_path, behavior):
-                        self._log_generated_rule_file('mrs', output_path, len(rules))
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                return
+            if rule_format in ('mrs', 'srs', 'json'):
+                # 其他格式保持原有逻辑
+                if rule_format == 'mrs':
+                    tmp_path = self._make_temp_path('.tmp')
+                    self._write_rules(tmp_path, rules, 'text', behavior, version)
+                    try:
+                        if self._convert_to_mrs(tmp_path, output_path, behavior):
+                            self._log_generated_rule_file('mrs', output_path, len(rules))
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    return
 
-            if rule_format == 'srs':
-                tmp_path = self._make_temp_path('.json')
-                self._write_sing_box_source(tmp_path, rules, behavior, version)
-                try:
-                    if self._convert_to_srs(tmp_path, output_path):
-                        self._log_generated_rule_file('srs', output_path, len(rules))
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                return
+                if rule_format == 'srs':
+                    tmp_path = self._make_temp_path('.json')
+                    self._write_sing_box_source(tmp_path, rules, behavior, version)
+                    try:
+                        if self._convert_to_srs(tmp_path, output_path):
+                            self._log_generated_rule_file('srs', output_path, len(rules))
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    return
 
-            if rule_format == 'json':
-                self._write_sing_box_source(output_path, rules, behavior, version)
-                self._log_generated_rule_file('json', output_path, len(rules))
-                return
+                if rule_format == 'json':
+                    self._write_sing_box_source(output_path, rules, behavior, version)
+                    self._log_generated_rule_file('json', output_path, len(rules))
+                    return
 
-            # YAML 输出：强制添加 behavior: domain
+            # ===================== YAML 输出（关键修改） =====================
             with open(output_path, 'w', encoding='utf-8') as f:
                 if not output_path.endswith('.tmp'):
                     f.write(f"# 更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"# 规则数量: {len(rules)}\n")
+                    f.write(f"behavior: {behavior}\n")
+                    f.write("payload:\n")
                 
                 if rule_format == 'yaml':
-                    yaml_content = {
-                        'behavior': behavior,
-                        'payload': rules
-                    }
-                    yaml_str = yaml.dump(yaml_content, allow_unicode=True, indent=2,
-                                       default_flow_style=False, sort_keys=False)
-                    f.write(yaml_str.replace('\n-', '\n  -'))
+                    for rule in rules:
+                        # 强制使用单引号包裹（兼容 . 开头、* 等特殊字符）
+                        f.write(f"  - '{rule}'\n")
                 else:
                     f.write('\n'.join(rules))
             
