@@ -225,7 +225,6 @@ class RulesMerger:
             return data
         return []
 
-    # ==================== 转换方法（保持不变） ====================
     def _classical_to_ipcidr(self, rule: str) -> Optional[str]:
         parts = rule.split(',')
         if len(parts) < 2:
@@ -605,7 +604,6 @@ class RulesMerger:
                 os.makedirs(output_dir, exist_ok=True)
 
             if rule_format in ('mrs', 'srs', 'json'):
-                # 其他格式保持原有逻辑
                 if rule_format == 'mrs':
                     tmp_path = self._make_temp_path('.tmp')
                     self._write_rules(tmp_path, rules, 'text', behavior, version)
@@ -633,18 +631,16 @@ class RulesMerger:
                     self._log_generated_rule_file('json', output_path, len(rules))
                     return
 
-            # ===================== YAML 输出（关键修改） =====================
+            # ===================== YAML 输出（已移除 behavior） =====================
             with open(output_path, 'w', encoding='utf-8') as f:
                 if not output_path.endswith('.tmp'):
                     f.write(f"# 更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"# 规则数量: {len(rules)}\n")
-                    f.write(f"behavior: {behavior}\n")
                     f.write("payload:\n")
                 
                 if rule_format == 'yaml':
                     for rule in rules:
-                        # 强制使用单引号包裹（兼容 . 开头、* 等特殊字符）
-                        f.write(f"  - '{rule}'\n")
+                        f.write(f"  - '{rule}'\n")   # 保持单引号格式
                 else:
                     f.write('\n'.join(rules))
             
