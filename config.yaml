@@ -180,13 +180,12 @@
       url: https://raw.githubusercontent.com/Accademia/Additional_Rule_For_Clash/refs/heads/main/GeositeCN/GeositeCN.yaml
       format: yaml
       behavior: classical
-   MetaCubeX_cn:
+    MetaCubeX_cn:
       type: http
       url: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/cn.yaml
       format: yaml
-      behavior: domain
-      
-   DustinWin_cn :
+      behavior: domain      
+    DustinWin_cn :
       type: http
       url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/cn.mrs
       format: mrs
@@ -229,7 +228,7 @@
       url: https://ruleset.skk.moe/Clash/ip/china_ip_ipv6.txt
       format: text
       behavior: ipcidr
-    skk_china_ipv6:
+    DustinWin_cn_ip :
       type: http
       url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/cnip.list
       format: text
