@@ -27,6 +27,7 @@ MAX_WORKERS = 12
 REQUEST_TIMEOUT = 15
 RETRY_TIMES = 3
 
+
 class RulesMerger:
     def __init__(self, config_path: str = 'config.yaml'):
         self.logger = logging.getLogger(__name__)
@@ -274,7 +275,6 @@ class RulesMerger:
             json.dump(rule_set, f, ensure_ascii=False, indent=2)
 
     def _to_sing_box_rules(self, rules: List[str], behavior: str) -> List[Dict[str, Any]]:
-        """增强版：自动将所有规则分类合并到一个 rule 对象中"""
         merged = {
             'domain': [],
             'domain_suffix': [],
@@ -306,7 +306,6 @@ class RulesMerger:
                     else:
                         merged[key].append(value)
 
-        # 去重 + 排序
         compact_rule = {k: sorted(set(v)) for k, v in merged.items() if v}
         return [compact_rule] if compact_rule else []
 
@@ -575,7 +574,8 @@ class RulesMerger:
                 continue
 
             target_format = cfg.get('format', 'yaml')
-            default_behavior = 'sing-box' if target_format in ('json', 'srs') else 'classical'
+            # 修改重点：YAML 默认使用 domain 行为
+            default_behavior = 'sing-box' if target_format in ('json', 'srs') else 'domain'
             target_behavior = cfg.get('behavior', default_behavior)
 
             if target_format == 'mrs' and target_behavior not in ('domain', 'ipcidr'):
@@ -598,7 +598,7 @@ class RulesMerger:
         self.logger.info(f"🎉 全部完成！总耗时: {time.time() - start_time:.1f} 秒")
 
     def _write_rules(self, output_path: str, rules: List[str], rule_format: str = 'yaml',
-                     behavior: str = 'classical', version: int = SING_BOX_RULESET_VERSION) -> None:
+                     behavior: str = 'domain', version: int = SING_BOX_RULESET_VERSION) -> None:
         try:
             output_dir = os.path.dirname(output_path)
             if output_dir:
@@ -631,16 +631,23 @@ class RulesMerger:
                 self._log_generated_rule_file('json', output_path, len(rules))
                 return
 
+            # YAML 输出：强制添加 behavior: domain
             with open(output_path, 'w', encoding='utf-8') as f:
                 if not output_path.endswith('.tmp'):
                     f.write(f"# 更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"# 规则数量: {len(rules)}\n")
+                
                 if rule_format == 'yaml':
-                    yaml_str = yaml.dump({'payload': rules}, allow_unicode=True, indent=2,
+                    yaml_content = {
+                        'behavior': behavior,
+                        'payload': rules
+                    }
+                    yaml_str = yaml.dump(yaml_content, allow_unicode=True, indent=2,
                                        default_flow_style=False, sort_keys=False)
                     f.write(yaml_str.replace('\n-', '\n  -'))
                 else:
                     f.write('\n'.join(rules))
+            
             if not output_path.endswith('.tmp'):
                 self._log_generated_rule_file(rule_format, output_path, len(rules))
         except Exception as e:
@@ -649,9 +656,11 @@ class RulesMerger:
     def _log_generated_rule_file(self, rule_format: str, output_path: str, rule_count: int):
         self.logger.info(f"✅ 已生成 {rule_format} 文件: {output_path} ({rule_count} 条)")
 
+
 def main():
     merger = RulesMerger('config.yaml')
     merger.merge_rules()
+
 
 if __name__ == '__main__':
     main()
