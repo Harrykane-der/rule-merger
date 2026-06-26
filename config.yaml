@@ -170,6 +170,11 @@
       url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/cn.mrs
       format: mrs
       behavior: domain
+    echs-top_cn:
+      type: http
+      url: https://github.com/echs-top/proxy/raw/refs/heads/main/list/domain/cn.list
+      format: text
+      behavior: domain 
       
     
 
@@ -217,6 +222,11 @@
       type: http
       url: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geoip/cn.yaml
       format: yaml
+      behavior: ipcidr
+    echs-top_cn_ip:
+      type: http
+      url: https://github.com/echs-top/proxy/raw/refs/heads/main/list/ip/cn.list
+      format: text
       behavior: ipcidr
 
 - path: output/cn_ip.yaml
