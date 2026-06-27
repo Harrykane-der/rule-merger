@@ -152,25 +152,6 @@
   behavior: sing-box
   upstream: *adblock_ip_upstream
 
-- path: output/ablock.srs
-  format: srs
-  behavior: sing-box
-  upstream: &ablock_upstream
-    Harrykane-der_ablock:
-      type: http
-      url: https://github.com/Harrykane-der/my-rules/refs/heads/main/ablock.json
-      format: json
-      behavior: sing-box
-
-- path: output/ablock.yaml
-  format: yaml
-  behavior: classical
-  upstream: *ablock_upstream
-
-- path: output/ablock.json
-  format: json
-  behavior: sing-box
-  upstream: *ablock_upstream
 
 # direct
 - path: output/cn.mrs
