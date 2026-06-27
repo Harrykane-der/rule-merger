@@ -71,7 +71,7 @@
 - path: output/proxy_emby.srs
   format: srs
   behavior: sing-box
-  upstream: *proxy_emby_upstream  
+  upstream: *proxy_emby_upstream
 
 # ablock
 - path: output/adblock.mrs
@@ -592,12 +592,12 @@
       behavior: classical
     QuixoticHeart_fake_ip_filter:
       type: http
-      url: https://github.com/QuixoticHeart/rule-set/raw/refs/heads/ruleset/meta/domain/fake-ip-filter.list
+      url: https://github.com/QuixoticHeart/rule-set/raw/refs/heads/ruleset/meta/domain/media.list
       format: text
       behavior: domain
-    wwqgtxx_fake_ip_filter:
+    Dustinwin_media:
       type: http
-      url: https://raw.githubusercontent.com/wwqgtxx/clash-rules/release/fakeip-filter.mrs
+      url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/media.mrs
       format: mrs
       behavior: domain
     Harrykane-der_fake_ip_filter:
@@ -622,3 +622,33 @@
   format: srs
   behavior: sing-box
   upstream: *fakeip_filter_upstream
+  
+- path: output/media.mrs
+  format: mrs
+  behavior: domain
+  upstream: &media_upstream
+    DustinWin_media:
+      type: http
+      url: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/media.mrs
+      format: mrs
+      behavior: domain
+    MetaCubeX_media:
+      type: http
+      url: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-media.mrs
+      format: mrs
+      behavior: domain
+
+- path: output/media.yaml
+  format: yaml
+  behavior: domain
+  upstream: *media_upstream
+
+- path: output/media.json
+  format: json
+  behavior: sing-box
+  upstream: *media_upstream
+
+- path: output/media.srs
+  format: srs
+  behavior: sing-box
+  upstream: *media_upstream
