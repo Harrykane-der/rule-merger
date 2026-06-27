@@ -343,12 +343,16 @@ class RulesMerger:
         merged = {
             'domain': []
         },
+        {
             'domain_suffix': []
         },
+        {
             'domain_keyword': []
         },
+        {
             'domain_regex': []
         },
+        {
             'ip_cidr': []
         }
 
