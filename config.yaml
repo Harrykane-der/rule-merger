@@ -4,7 +4,7 @@
   upstream: &game_upstream
     game:
       type: http
-      url: https://github.com/Harrykane-der/mihomo-rules/raw/refs/heads/main/game.yaml
+      url: https://github.com/Harrykane-der/my-rules/raw/refs/heads/main/game.yaml
       format: yaml
       behavior: domain
 
@@ -29,7 +29,7 @@
   upstream: &direct_emby_upstream
     direct_emby:
       type: http
-      url: https://github.com/Harrykane-der/mihomo-rules/raw/refs/heads/main/direct_emby.yaml
+      url: https://github.com/Harrykane-der/my-rules/raw/refs/heads/main/direct_emby.yaml
       format: yaml
       behavior: domain
 
@@ -54,7 +54,7 @@
   upstream: &proxy_emby_upstream
     proxy_emby:
       type: http
-      url: https://github.com/Harrykane-der/mihomo-rules/raw/refs/heads/main/proxy_emby.yaml
+      url: https://github.com/Harrykane-der/my-rules/raw/refs/heads/main/proxy_emby.yaml
       format: yaml
       behavior: domain
 
@@ -136,6 +136,7 @@
       format: mrs
       behavior: ipcidr
 
+
 - path: output/adblock_ip.yaml
   format: yaml
   behavior: classical
@@ -150,6 +151,16 @@
   format: srs
   behavior: sing-box
   upstream: *adblock_ip_upstream
+
+- path: output/ablock.srs
+  format: srs
+  behavior: sing-box
+  upstream: &ablock_upstream
+    httpdns_ip:
+      type: http
+      url: https://github.com/Harrykane-der/my-rules/refs/heads/main/ablock.json
+      format: json
+      behavior: sing-box
 
 # direct
 - path: output/cn.mrs
@@ -602,7 +613,7 @@
       behavior: domain
     Harrykane-der_fake_ip_filter:
       type: http
-      url: https://github.com/Harrykane-der/mihomo-rules/raw/refs/heads/main/fakeip-filter.yaml
+      url: https://github.com/Harrykane-der/my-rules/raw/refs/heads/main/fakeip-filter.yaml
       format: yaml
       behavior: domain
       
