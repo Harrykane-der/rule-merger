@@ -14,32 +14,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ==================== 安装 sing-box ====================
-      - name: Setup sing-box v1.14.0-alpha.36
+      # ==================== 下载支持 version 5 的 sing-box ====================
+      - name: Setup sing-box (support version 5)
         run: |
-          wget -q https://github.com/SagerNet/sing-box/releases/download/v1.14.0-alpha.36/sing-box-1.14.0-alpha.36-linux-amd64.tar.gz -O sing-box.tar.gz
-          tar -xzf sing-box.tar.gz
-          sudo mv sing-box-*-linux-amd64/sing-box /usr/local/bin/sing-box
+          curl -L -o sing-box https://github.com/DustinWin/proxy-tools/releases/download/sing-box/sing-box-ref1nd-testing-linux-amd64-v3.upx
+          chmod +x sing-box
+          sudo mv sing-box /usr/local/bin/sing-box
           sing-box version
 
-      # ==================== 下载 sing-box JSON 规则 ====================
+      # ==================== 下载你的 JSON 规则 ====================
       - name: Download ablock.json
         run: |
           mkdir -p rule
           URL="https://github.com/Harrykane-der/my-rules/raw/refs/heads/main/ablock.json"
           curl -L -f -o rule/ablock.json "$URL" || { echo "❌ Download failed!"; exit 1; }
-          echo "Downloaded lines: $(wc -l rule/ablock.json)"
+          echo "Downloaded: $(wc -l rule/ablock.json) lines"
 
       # ==================== JSON → SRS 转换 ====================
-      - name: Convert sing-box JSON to SRS
+      - name: Convert to sing-box SRS (version 5)
         run: |
-          echo "🔄 Converting JSON to .srs ..."
+          echo "🔄 Converting ablock.json to .srs ..."
           
           sing-box rule-set compile \
             --output rule/ablock.srs \
+            --version 5 \
             rule/ablock.json
 
-          echo "✅ Conversion completed successfully!"
+          echo "✅ Conversion completed!"
           ls -lh rule/ablock.srs
 
       # ==================== 提交更新 ====================
@@ -51,9 +52,9 @@ jobs:
           git add rule/ablock.json rule/ablock.srs
 
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "No changes detected"
           else
             git commit -m "Update ablock rule-set - $(date +'%Y-%m-%d %H:%M:%S')"
             git push
-            echo "✅ Rules updated and pushed"
+            echo "✅ Successfully updated and pushed"
           fi
