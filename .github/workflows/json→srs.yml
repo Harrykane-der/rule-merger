@@ -28,17 +28,15 @@ jobs:
           mkdir -p rule
           URL="https://github.com/Harrykane-der/my-rules/raw/refs/heads/main/ablock.json"
           curl -L -f -o rule/ablock.json "$URL" || { echo "❌ Download failed!"; exit 1; }
-          echo "Downloaded: $(wc -l rule/ablock.json) lines"
-          ls -lh rule/ablock.json
+          echo "Downloaded lines: $(wc -l rule/ablock.json)"
 
       # ==================== JSON → SRS 转换 ====================
-      - name: Convert sing-box JSON to SRS (version 5)
+      - name: Convert sing-box JSON to SRS
         run: |
-          echo "🔄 Converting JSON to SRS (version 5)..."
+          echo "🔄 Converting JSON to .srs ..."
           
           sing-box rule-set compile \
             --output rule/ablock.srs \
-            --version 5 \
             rule/ablock.json
 
           echo "✅ Conversion completed successfully!"
