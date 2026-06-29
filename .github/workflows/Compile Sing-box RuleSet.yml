@@ -1,4 +1,4 @@
-name: Compile Sing-box Rule Sets
+name: Build Sing-box Rule Sets (Pro Release)
 
 on:
   push:
@@ -19,91 +19,87 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: singbox-rule-build
+  cancel-in-progress: true
+
 jobs:
-  compile:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 安装 sing-box v1.14.0-alpha.36
+      - name: Install sing-box
         run: |
           set -e
-          wget -q https://github.com/SagerNet/sing-box/releases/download/v1.14.0-alpha.36/sing-box-1.14.0-alpha.36-linux-amd64.tar.gz -O sing-box.tar.gz
-          tar -xzf sing-box.tar.gz
+          wget -q https://github.com/SagerNet/sing-box/releases/download/v1.14.0-alpha.36/sing-box-1.14.0-alpha.36-linux-amd64.tar.gz -O sb.tar.gz
+          tar -xzf sb.tar.gz
           sudo mv sing-box-*/sing-box /usr/local/bin/sing-box
-          sudo chmod +x /usr/local/bin/sing-box
           sing-box version
 
-      - name: 编译 JSON → SRS
+      - name: Build rules
         run: |
           set -e
 
-          rm -rf compiled-rules
-          mkdir -p compiled-rules
-
-          echo "检查 local 目录..."
-          ls -R local || true
+          BUILD_DIR="/tmp/singbox-build"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
 
           mapfile -d '' files < <(find local -type f -name "*.json" -print0)
 
-          echo "JSON 数量: ${#files[@]}"
-
+          echo "JSON files: ${#files[@]}"
           if [ ${#files[@]} -eq 0 ]; then
-            echo "❌ 没有 JSON 文件"
+            echo "No rule files"
             exit 1
           fi
 
-          for json_file in "${files[@]}"; do
-            srs_file="compiled-rules/${json_file#local/}"
-            srs_file="${srs_file%.json}.srs"
+          for f in "${files[@]}"; do
+            out="$BUILD_DIR/${f#local/}"
+            out="${out%.json}.srs"
 
-            mkdir -p "$(dirname "$srs_file")"
+            mkdir -p "$(dirname "$out")"
 
-            echo "编译: $json_file -> $srs_file"
+            echo "compile: $f -> $out"
 
-            if ! sing-box rule-set compile \
-              --output "$srs_file" \
-              "$json_file"; then
-              echo "❌ 编译失败: $json_file"
-              exit 1
-            fi
+            sing-box rule-set compile \
+              --output "$out" \
+              "$f"
           done
 
-          echo "编译完成"
-          find compiled-rules -name "*.srs" | sort
+          find "$BUILD_DIR" -type f -name "*.srs" | sort
 
-      - name: 推送到 my-rules 分支
+      - name: Publish to release branch
         run: |
           set -e
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          rm -rf /tmp/rules
-          mkdir -p /tmp/rules
-
-          cp -r compiled-rules/. /tmp/rules/
+          BUILD_DIR="/tmp/singbox-build"
 
           git fetch origin
 
-          # 切换或创建 my-rules 分支
-          if git show-ref --verify --quiet refs/remotes/origin/my-rules; then
-            git checkout my-rules
-            git pull origin my-rules
+          # 切换 release 分支（不存在则创建）
+          if git show-ref --verify --quiet refs/remotes/origin/release; then
+            git checkout release
+            git pull origin release
           else
-            git checkout --orphan my-rules
+            git checkout -b release
           fi
 
-          # 清空旧内容（保留 .git）
+          # 清空旧文件（保留 git）
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
-          cp -r /tmp/rules/. .
+          # 写入新规则
+          cp -r "$BUILD_DIR"/. .
 
-          touch .nojekyll
+          # 版本标记
+          VERSION="$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD || echo unknown)"
+          echo "$VERSION" > VERSION
 
           git add -A
 
@@ -112,5 +108,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update rule sets"
-          git push origin my-rules --force
+          git commit -m "Update rule sets $VERSION"
+          git push origin release
