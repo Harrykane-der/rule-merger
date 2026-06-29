@@ -93,6 +93,7 @@ class RulesMerger:
             
             content_type = response.headers.get('content-type', '')
             
+            # 【修复缩进 Bug】将原本换行的复杂逻辑合并到一行，避免缩进混淆
             is_yaml = (rule_format == 'yaml') or (rule_format not in ('mrs', 'text', 'json', 'srs') and ('yaml' in content_type or url.endswith(('.yml', '.yaml'))))
             
             if is_yaml:
@@ -186,7 +187,7 @@ class RulesMerger:
         if len(parts) < 2:
             return None
         
-        suffix = parts[0].strip().upper()
+        suffix = parts[0].strip()
         ipcidr = parts[1].strip()
         if not (suffix == 'IP-CIDR' or suffix == 'IP-CIDR6'):
             return None
@@ -198,7 +199,7 @@ class RulesMerger:
         if len(parts) < 2:
             return None
         
-        suffix = parts[0].strip().upper()
+        suffix = parts[0].strip()
         domain = parts[1].strip()
         if not DOMAIN_PATTERN.match(domain):
             return None
@@ -250,24 +251,19 @@ class RulesMerger:
             return []
 
     def _extract_yaml_rules(self, data: Any, source: str) -> List[str]:
-        """从 YAML 内容中提取规则列表并进行初步规范化。"""
+        """从 YAML 内容中提取规则列表。"""
         if data is None:
             return []
-        raw_list = []
         if isinstance(data, dict):
             payload = data.get('payload')
             if isinstance(payload, list):
-                raw_list = payload
-            else:
-                self.logger.warning(f"YAML规则缺少有效payload列表: {source}")
-                return []
-        elif isinstance(data, list):
-            raw_list = data
-        else:
-            self.logger.warning(f"YAML规则格式不支持: {source}")
+                return payload
+            self.logger.warning(f"YAML规则缺少有效payload列表: {source}")
             return []
-        
-        return [str(item).strip() for item in raw_list if item is not None]
+        if isinstance(data, list):
+            return data
+        self.logger.warning(f"YAML规则格式不支持: {source}")
+        return []
     
     def _clean_rule(self, rule: str) -> str:
         """清理规则中的注释内容"""
@@ -344,7 +340,6 @@ class RulesMerger:
                 rules = self._process_source(source_config, target_behavior)
                 merged_rules.extend(rules)
             
-            # 最终利用 set 彻底去重并排序
             merged_rules = sorted(set(merged_rules))
             output_file = config['path']
             self._write_rules(
@@ -515,7 +510,7 @@ class RulesMerger:
         if len(parts) < 2:
             return None
 
-        rule_type = parts[0].upper()  # 强转大写保证一致性
+        rule_type = parts[0]
         value = parts[1]
         mapping = {
             'DOMAIN': 'domain',
@@ -555,27 +550,9 @@ class RulesMerger:
         return normalized_rules
 
     def _normalize_sing_box_rule(self, rule: Any) -> Optional[str]:
-        """【深度修复：全面规范化 JSON 结构防止重复】"""
         if not isinstance(rule, dict):
             return None
-        
-        # 深度复制一份，防止破坏原对象
-        cleaned_rule = {}
-        for k, v in rule.items():
-            # 如果值是列表（例如 domain_suffix 等数组成员），先对列表内容去重并排序
-            if isinstance(v, list):
-                cleaned_list = sorted(list(set([str(item).strip() for item in v if item is not None])))
-                cleaned_rule[k] = cleaned_list
-            elif isinstance(v, dict):
-                # 递归处理嵌套的逻辑规则（比如嵌套的 logical 规则组）
-                nested = self._normalize_sing_box_rule(v)
-                if nested:
-                    cleaned_rule[k] = json.loads(nested)
-            else:
-                cleaned_rule[k] = v if not isinstance(v, str) else v.strip()
-
-        # 序列化时强制开启 sort_keys，保证相同属性的项生成完全一致的字符串形态
-        return json.dumps(cleaned_rule, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        return json.dumps(rule, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
     def _parse_sing_box_rule(self, rule: str) -> Optional[Dict[str, Any]]:
         try:
@@ -626,13 +603,12 @@ class RulesMerger:
         rules = []
         for item in self._iter_sing_box_rules(parsed):
             for domain in self._as_list(item.get('domain')):
-                if isinstance(domain, str) and self._validate_domain_rule(domain.strip()):
-                    rules.append(domain.strip())
+                if isinstance(domain, str) and self._validate_domain_rule(domain):
+                    rules.append(domain)
             for suffix in self._as_list(item.get('domain_suffix')):
                 if isinstance(suffix, str):
-                    s = suffix.strip()
-                    s = s[1:] if s.startswith('.') else s
-                    domain_rule = f"+.{s}"
+                    suffix = suffix[1:] if suffix.startswith('.') else suffix
+                    domain_rule = f"+.{suffix}"
                     if self._validate_domain_rule(domain_rule):
                         rules.append(domain_rule)
         return rules
@@ -645,8 +621,8 @@ class RulesMerger:
         rules = []
         for item in self._iter_sing_box_rules(parsed):
             for ipcidr in self._as_list(item.get('ip_cidr')):
-                if isinstance(ipcidr, str) and self._validate_ipcidr_rule(ipcidr.strip()):
-                    rules.append(ipcidr.strip())
+                if isinstance(ipcidr, str) and self._validate_ipcidr_rule(ipcidr):
+                    rules.append(ipcidr)
         return rules
 
     def _sing_box_to_classical(self, rule: str) -> List[str]:
@@ -658,27 +634,25 @@ class RulesMerger:
         for item in self._iter_sing_box_rules(parsed):
             for domain in self._as_list(item.get('domain')):
                 if isinstance(domain, str):
-                    classical_rule = f"DOMAIN,{domain.strip()}"
+                    classical_rule = f"DOMAIN,{domain}"
                     if self._validate_classical_rule(classical_rule):
                         rules.append(classical_rule)
             for suffix in self._as_list(item.get('domain_suffix')):
                 if isinstance(suffix, str):
-                    s = suffix.strip()
-                    s = s[1:] if s.startswith('.') else s
-                    classical_rule = f"DOMAIN-SUFFIX,{s}"
+                    suffix = suffix[1:] if suffix.startswith('.') else suffix
+                    classical_rule = f"DOMAIN-SUFFIX,{suffix}"
                     if self._validate_classical_rule(classical_rule):
                         rules.append(classical_rule)
             for keyword in self._as_list(item.get('domain_keyword')):
                 if isinstance(keyword, str):
-                    rules.append(f"DOMAIN-KEYWORD,{keyword.strip()}")
+                    rules.append(f"DOMAIN-KEYWORD,{keyword}")
             for regex_rule in self._as_list(item.get('domain_regex')):
                 if isinstance(regex_rule, str):
-                    rules.append(f"DOMAIN-REGEX,{regex_rule.strip()}")
+                    rules.append(f"DOMAIN-REGEX,{regex_rule}")
             for ipcidr in self._as_list(item.get('ip_cidr')):
                 if not isinstance(ipcidr, str):
                     continue
-                ip = ipcidr.strip()
-                classical_rule = f"IP-CIDR6,{ip}" if ':' in ip else f"IP-CIDR,{ip}"
+                classical_rule = f"IP-CIDR6,{ipcidr}" if ':' in ipcidr else f"IP-CIDR,{ipcidr}"
                 if self._validate_classical_rule(classical_rule):
                     rules.append(classical_rule)
         return rules
@@ -699,53 +673,43 @@ class RulesMerger:
         return [value]
     
     def _validate_classical_rule(self, rule: str) -> Optional[str]:
-        """验证经典规则格式并强制规范化"""
+        """验证经典规则格式"""
         try:
             parts = rule.split(',')
             if len(parts) < 2:
                 return None
-            rule_type = parts[0].strip().upper()  # 强转大写
+            rule_type = parts[0]
             value = parts[1].strip()
-            
-            # 重新组装干净、无额外空格的规则串
-            normalized_parts = [rule_type, value]
-            if len(parts) > 2:
-                # 保留类似 no-resolve 这种附加属性
-                normalized_parts.extend([p.strip() for p in parts[2:]])
-            
-            clean_rule_str = ','.join(normalized_parts)
-            
+            rule = ','.join(part.strip() for part in parts)
             if rule_type in {'DOMAIN', 'DOMAIN-SUFFIX'}:
-                return clean_rule_str if DOMAIN_PATTERN.match(value) else None
+                return rule if DOMAIN_PATTERN.match(value) else None
             elif rule_type == 'IP-CIDR':
-                return clean_rule_str if self._get_ipcidr_version(value) == 4 else None
+                return rule if self._get_ipcidr_version(value) == 4 else None
             elif rule_type == 'IP-CIDR6':
-                return clean_rule_str if self._get_ipcidr_version(value) == 6 else None
-            return clean_rule_str
+                return rule if self._get_ipcidr_version(value) == 6 else None
+            return rule
         except Exception as e:
             self.logger.debug(f"规则验证失败: {rule}, 错误: {str(e)}")
             return None
 
     def _validate_ipcidr_rule(self, rule: str) -> Optional[str]:
         """验证 IP-CIDR 规则格式"""
-        clean_ip = rule.strip()
-        if self._get_ipcidr_version(clean_ip):
-            return clean_ip
+        if self._get_ipcidr_version(rule):
+            return rule
         self.logger.debug(f"IP-CIDR 规则验证失败: {rule}")
         return None
 
     def _get_ipcidr_version(self, rule: str) -> Optional[int]:
         try:
-            return ipaddress.ip_network(rule.strip(), strict=False).version
+            return ipaddress.ip_network(rule, strict=False).version
         except ValueError:
             return None
 
     def _validate_domain_rule(self, rule: str) -> Optional[str]:
         """验证域名规则格式"""
-        clean_domain = rule.strip()
-        domain = clean_domain[2:] if clean_domain.startswith('+.') else clean_domain
+        domain = rule[2:] if rule.startswith('+.') else rule
         if DOMAIN_PATTERN.match(domain):
-            return clean_domain
+            return rule
         self.logger.debug(f"域名规则验证失败: {rule}")
         return None
 
