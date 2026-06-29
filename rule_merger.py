@@ -55,6 +55,15 @@ class RulesMerger:
             ('sing-box', 'ipcidr'): self._sing_box_to_ipcidr
         }
 
+    def _normalize_behavior(self, behavior: Optional[str]) -> str:
+        """统一 behavior 的命名规范，消除用户在 yaml 里面写 singbox 或 sing-box 的差异"""
+        if not behavior:
+            return 'classical'
+        b = behavior.strip().lower()
+        if b in ('singbox', 'sing-box'):
+            return 'sing-box'
+        return b
+
     def _load_config(self, path: str) -> dict:
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -69,7 +78,6 @@ class RulesMerger:
         return path
     
     def _fetch_http_rules(self, url: str, rule_format: str, behavior: str) -> List[Any]:
-        """获取在线规则，如果是 sing-box json/srs 则返回 Dict 列表（未揉碎的原始规则列表）"""
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
@@ -111,7 +119,6 @@ class RulesMerger:
             return []
     
     def _read_local_rules(self, path: str, rule_format: str, behavior: str) -> List[Any]:
-        """读取本地规则，保留完整的原始结构"""
         try:
             if rule_format == 'mrs':
                 return self._read_mrs_file(path, behavior)
@@ -132,7 +139,6 @@ class RulesMerger:
             return []
 
     def _parse_sing_box_source_to_list(self, content: str) -> List[Dict[str, Any]]:
-        """解析完整的 sing-box source 格式，直接返回其内部的 rules 规则字典列表对象"""
         try:
             data = json.loads(content.lstrip('\ufeff'))
             if isinstance(data, dict) and 'rules' in data and isinstance(data['rules'], list):
@@ -159,12 +165,14 @@ class RulesMerger:
         return parts[0].strip() if len(parts) > 1 else rule
 
     def _transform(self, rule: Any, source_behavior: str, target_behavior: str) -> List[Any]:
-        """执行流转。支持对原始 dict 进行逆向拆解为单行文本规则"""
+        # 统一格式名
+        source_behavior = self._normalize_behavior(source_behavior)
+        target_behavior = self._normalize_behavior(target_behavior)
+
         if isinstance(rule, dict):
             if target_behavior == 'sing-box':
                 return [rule]  # 目标是 sing-box，原装放行
             
-            # 当规则源是 sing-box (dict)，但目标是 classical / domain / ipcidr 时，执行逆向降维分解
             transformer = self._transformers.get(('sing-box', target_behavior))
             if transformer:
                 return transformer(json.dumps(rule))
@@ -183,7 +191,8 @@ class RulesMerger:
     def _process_source(self, source: Dict, target_behavior: str) -> List[Any]:
         rule_format = source.get('format', 'yaml')
         default_behavior = 'sing-box' if rule_format in ('json', 'srs') else 'classical'
-        source_behavior = source.get('behavior', default_behavior)
+        source_behavior = self._normalize_behavior(source.get('behavior', default_behavior))
+        target_behavior = self._normalize_behavior(target_behavior)
 
         source_type = source.get('type')
         if source_type == 'http':
@@ -196,40 +205,40 @@ class RulesMerger:
         converted_rules = []
         for rule in rules:
             if rule is None: continue
-            cleaned_rule = rule if isinstance(rule, dict) or source_behavior == 'sing-box' else self._clean_rule(str(rule))
+            # 优化：判断当前是不是已经是 dict 对象或者属于 sing-box 行为，如果是则直接保留，防止错误执行清线逻辑
+            if isinstance(rule, dict) or source_behavior == 'sing-box':
+                cleaned_rule = rule
+            else:
+                cleaned_rule = self._clean_rule(str(rule))
+                
             transformed = self._transform(cleaned_rule, source_behavior, target_behavior)
             if transformed:
                 converted_rules.extend(transformed)
         return converted_rules
     
     def merge_rules(self) -> None:
-        """核心处理中心"""
         for config in self.config:
             if 'upstream' not in config or not config.get('path'): continue
             
             target_format = config.get('format', 'yaml')
             default_behavior = 'sing-box' if target_format in ('json', 'srs') else 'classical'
-            target_behavior = config.get('behavior', default_behavior)
+            target_behavior = self._normalize_behavior(config.get('behavior', default_behavior))
             
             raw_collected = []
             for source_config in config['upstream'].values():
                 rules = self._process_source(source_config, target_behavior)
                 raw_collected.extend(rules)
 
-            # 区分：普通文本规则字符串 与 原生自带的结构化sing-box字典规则
             dict_rules = [r for r in raw_collected if isinstance(r, dict)]
             str_rules = [r for r in raw_collected if isinstance(r, str)]
 
-            # 1. 针对常规文本行进行统一去重排序
             str_rules = sorted(set(str_rules))
 
-            # 2. 最终合并处理
             final_rules = []
             if target_behavior == 'sing-box':
-                # 核心要求：将来自非sing-box格式转换出来的零碎规则汇总大合并，再与原始 dict 合并去重
+                # 核心改进：把文本生成的单兵序列化 json 字符串 和 原生的 dict 规则全部喂给大合并压缩核心
                 final_rules = self._compile_final_sing_box_list(str_rules, dict_rules)
             else:
-                # 传统行为：直接合并
                 final_rules = str_rules
 
             output_file = config['path']
@@ -245,7 +254,7 @@ class RulesMerger:
         bucket = {key: [] for key in SING_BOX_LIST_FIELDS}
         passthrough_rules = []
 
-        # 将转换过来的单兵单行JSON规则进行入桶大合并
+        # 1. 提取文本转换出来的 sing-box 规则片段并入桶
         for rule_str in converted_str_rules:
             parsed = self._parse_sing_box_rule(rule_str)
             if not parsed: continue
@@ -254,13 +263,17 @@ class RulesMerger:
             else:
                 passthrough_rules.append(parsed)
 
-        # 得到非sing-box源大合并压缩后的成果
+        # 2. 深度深度优化：原生的 dict_rules 同样提取出来参与大桶合并压缩，实现彻底的规则瘦身去重！
+        for rule_dict in original_dict_rules:
+            if self._can_compact_sing_box_rule(rule_dict):
+                self._add_sing_box_rule_items(bucket, rule_dict)
+            else:
+                passthrough_rules.append(rule_dict)
+
         compacted_results = self._compact_sing_box_rules(bucket)
+        all_rules_pool = compacted_results + passthrough_rules
 
-        # 把上面压缩完的成果、不可压缩的零散逻辑规则、以及原装带进来的完整 rules 混合起来
-        all_rules_pool = compacted_results + passthrough_rules + original_dict_rules
-
-        # 对象高级精准去重（通过序列化特征）
+        # 高级精准特征去重
         seen_signatures = set()
         unique_final_rules = []
         for r in all_rules_pool:
@@ -304,7 +317,7 @@ class RulesMerger:
                         unique_values = [str(v) for v in unique_values]
                         unique_sorted_values = sorted(unique_values)
                     else:
-                        unique_values = [int(v) for v in unique_values]
+                        unique_values = [int(v) if str(v).isdigit() else v for v in unique_values]
                         unique_sorted_values = sorted(unique_values)
                 else:
                     unique_sorted_values = sorted(unique_values, key=lambda x: str(x))
