@@ -83,12 +83,6 @@
       format: json
       behavior: singbox
 
-
-- path: output/ablock.yaml
-  format: yaml
-  behavior: classical
-  upstream: *ablock_upstream
-
 - path: output/ablock.json
   format: json
   behavior: sing-box
