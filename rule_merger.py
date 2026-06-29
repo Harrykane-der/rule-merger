@@ -24,7 +24,7 @@ DOMAIN_PATTERN = re.compile(
 
 MIHOMO_PATH = 'mihomo'
 SING_BOX_PATH = 'sing-box'
-SING_BOX_RULESET_VERSION = 5
+SING_BOX_RULESET_VERSION = 4
 
 # sing-box 1.11+ 标准 Headless 规则支持的数组字段
 SING_BOX_LIST_FIELDS = (
@@ -101,7 +101,6 @@ class RulesMerger:
                 with open(tmp_path, 'wb') as tmp_in:
                     tmp_in.write(response.content)
                 try:
-                    # 尽可能全面地读取 mrs
                     behavior = 'classical'
                     if 'domain' in url.lower(): behavior = 'domain'
                     elif 'ip' in url.lower(): behavior = 'ipcidr'
@@ -171,11 +170,11 @@ class RulesMerger:
 
     def _parse_and_flatten_to_pool(self, raw_rules: List[str], format_type: str, behavior: str, pool: Dict[str, Set[str]]):
         """
-        【突破性修复】智能探测文本源格式，无论外界配置是 classical、domain 还是 ipcidr，
-        都同时进行全格式解析，避免因为规则格式不匹配引发的“无法转换、丢失规则”情况。
+        【漏洞彻底修复】
+        完美解析带有多修饰符或策略组（如 IP-CIDR,xxx,no-resolve 或 DOMAIN,xxx,Proxy）的 Mihomo 规则，
+        修复因逻辑未阻断导致 Mihomo 规则漏掉并缺失的重大 Bug。
         """
         if format_type in ('json', 'srs') or (len(raw_rules) == 1 and raw_rules[0].strip().startswith('{')):
-            # sing-box JSON 家族解包流程
             for content in raw_rules:
                 try:
                     data = json.loads(content.lstrip('\ufeff'))
@@ -192,53 +191,49 @@ class RulesMerger:
             if not cleaned:
                 continue
 
-            # --- 步骤 1: 尝试解析带前缀的经典 Mihomo/Clash 规则 ---
+            # --- 步骤 1: 严格匹配解析带前缀的 Mihomo/Clash 规则（处理多逗号、多修饰符情况） ---
             parts = [p.strip() for p in cleaned.split(',')]
             if len(parts) >= 2:
                 req_type = parts[0].upper()
-                val = parts[1]
+                val = parts[1]  # 核心目标值（域名、IP、进程名等）
 
+                is_mihomo_rule = True
                 if req_type == 'DOMAIN':
                     if DOMAIN_PATTERN.match(val): pool['domain'].add(val)
-                    continue
                 elif req_type == 'DOMAIN-SUFFIX':
                     if DOMAIN_PATTERN.match(val): pool['domain_suffix'].add(val)
-                    continue
                 elif req_type == 'DOMAIN-KEYWORD':
                     pool['domain_keyword'].add(val)
-                    continue
                 elif req_type == 'DOMAIN-REGEX':
                     pool['domain_regex'].add(val)
-                    continue
                 elif req_type in ('IP-CIDR', 'IP-CIDR6'):
                     try:
                         ipaddress.ip_network(val, strict=False)
                         pool['ip_cidr'].add(val)
                     except ValueError:
                         pass
-                    continue
                 elif req_type in ('DST-PORT', 'PORT'):
                     pool['port'].add(val)
-                    continue
                 elif req_type == 'NETWORK':
                     pool['network'].add(val.lower())
-                    continue
                 elif req_type == 'PROCESS-NAME':
                     pool['package_name'].add(val)
-                    continue
                 elif req_type == 'PROCESS-NAME-REGEX':
                     pool['package_name_regex'].add(val)
+                else:
+                    is_mihomo_rule = False
+
+                # 【核心修复点】如果是标准的 Mihomo 规则，解析完核心字段后必须立刻阻断，防止漏网
+                if is_mihomo_rule:
                     continue
 
-            # --- 步骤 2: 降级适配无前缀的纯列表（Domain 或 IP-CIDR） ---
-            # 如果是带 +. 开头的域名后缀（如 Clash 扁平 Domain 规则）
+            # --- 步骤 2: 降级适配无前缀的纯扁平列表（Domain 或 IP-CIDR） ---
             if cleaned.startswith('+.'):
                 d = cleaned[2:]
                 if DOMAIN_PATTERN.match(d):
                     pool['domain_suffix'].add(d)
                 continue
 
-            # 尝试作为纯 IP 检测
             try:
                 ipaddress.ip_network(cleaned, strict=False)
                 pool['ip_cidr'].add(cleaned)
@@ -246,11 +241,9 @@ class RulesMerger:
             except ValueError:
                 pass
 
-            # 最终尝试作为纯域名检测
             if DOMAIN_PATTERN.match(cleaned):
                 pool['domain'].add(cleaned)
             else:
-                # 仍无法识别的保留到 other 桶
                 pool['other'].add(cleaned)
 
     def _extract_sing_box_atom(self, rule_obj: Any, pool: Dict[str, Set[str]]):
