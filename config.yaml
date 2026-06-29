@@ -73,6 +73,16 @@
   behavior: sing-box
   upstream: *proxy_emby_upstream
 
+- path: output/ablock.srs
+  format: srs
+  behavior: singbox
+  upstream: &ablock_upstream
+    ablock.json:
+      type: http
+      url: https://raw.githubusercontent.com/Harrykane-der/my-rules/refs/heads/main/ablock.json
+      format: json
+      behavior: singbox
+
 # ablock
 - path: output/adblock.mrs
   format: mrs
