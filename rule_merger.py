@@ -15,6 +15,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# 域名校验正则
 DOMAIN_PATTERN = re.compile(
     r'^(?:\.?(\*|[a-zA-Z0-9*](?:[a-zA-Z0-9*-]*[a-zA-Z0-9*])?))'
     r'(?:\.(?:\*|[a-zA-Z0-9*](?:[a-zA-Z0-9*-]*[a-zA-Z0-9*])?))*$'
@@ -228,19 +229,24 @@ class RulesMerger:
         with open(output_path, 'w', encoding='utf-8') as f: json.dump({'version': version, 'rules': rules}, f, ensure_ascii=False, indent=2)
 
     def _to_sing_box_item(self, rule: str, behavior: str) -> Optional[tuple[str, Any]]:
-        # --- 核心修改处 ---
+        # 修正：识别以 *. 或 +. 开头的规则，并转为 domain_suffix
         if behavior == 'domain':
-            if rule.startswith(('+.', '*.')): return 'domain_suffix', rule[2:]
+            if rule.startswith(('+.', '*.')) and len(rule) > 2: 
+                return 'domain_suffix', rule[2:]
             return 'domain', rule
-        # ----------------
+            
         if behavior == 'ipcidr': return 'ip_cidr', rule
         if behavior != 'classical': return None
         parts = [p.strip() for p in rule.split(',')]
         if len(parts) < 2: return None
+        
         mapping = {'DOMAIN': 'domain', 'DOMAIN-SUFFIX': 'domain_suffix', 'DOMAIN-KEYWORD': 'domain_keyword', 'DOMAIN-REGEX': 'domain_regex', 'IP-CIDR': 'ip_cidr', 'IP-CIDR6': 'ip_cidr', 'PORT': 'port', 'DST-PORT': 'port', 'NETWORK': 'network'}
         target_key = mapping.get(parts[0])
-        # 兼容 DOMAIN 类型下带 *. 的情况
-        if parts[0] == 'DOMAIN' and parts[1].startswith(('+.', '*.')): return 'domain_suffix', parts[1][2:]
+        
+        # 兼容 classical 格式中 DOMAIN,*.example.com 的情况
+        if parts[0] == 'DOMAIN' and parts[1].startswith(('+.', '*.')) and len(parts[1]) > 2: 
+            return 'domain_suffix', parts[1][2:]
+            
         return (target_key, int(parts[1]) if target_key == 'port' and parts[1].isdigit() else (parts[1].lower() if target_key == 'network' else parts[1])) if target_key else None
 
     def _classical_to_sing_box(self, rule: str) -> Optional[str]:
@@ -262,7 +268,7 @@ class RulesMerger:
         parts = rule.split(',')
         if len(parts) < 2: return None
         suffix, domain = parts[0].strip(), parts[1].strip()
-        if suffix == 'DOMAIN' and domain.startswith(('+.', '*.')): suffix, domain = 'DOMAIN-SUFFIX', domain[2:]
+        if suffix == 'DOMAIN' and domain.startswith(('+.', '*.')) and len(domain) > 2: suffix, domain = 'DOMAIN-SUFFIX', domain[2:]
         return domain if suffix == 'DOMAIN' else (f"+.{domain}" if suffix == 'DOMAIN-SUFFIX' else None)
 
     def _validate_domain_rule(self, rule: str) -> Optional[str]:
@@ -278,7 +284,7 @@ class RulesMerger:
         return f"IP-CIDR6,{rule}" if v == 6 else f"IP-CIDR,{rule}"
 
     def _domain_to_classical(self, rule: str) -> Optional[str]:
-        if rule.startswith(('+.', '*.')): return f"DOMAIN-SUFFIX,{rule[2:]}"
+        if rule.startswith(('+.', '*.')) and len(rule) > 2: return f"DOMAIN-SUFFIX,{rule[2:]}"
         return f"DOMAIN,{rule}"
 
     def _sing_box_to_domain(self, rule_str: str) -> List[str]:
