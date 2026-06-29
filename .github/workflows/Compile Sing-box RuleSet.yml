@@ -2,16 +2,22 @@ name: Compile Sing-box Rule Sets
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - 'local/**/*.json'
+      - "local/**/*.json"
+
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - 'local/**/*.json'
+      - "local/**/*.json"
+
   workflow_dispatch:
+
   schedule:
-    - cron: '0 4 * * *'
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: write
 
 jobs:
   compile:
@@ -20,31 +26,82 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: 安装 sing-box
+      - name: 安装 sing-box v1.14.0-alpha.36
         run: |
           wget -q https://github.com/SagerNet/sing-box/releases/download/v1.14.0-alpha.36/sing-box-1.14.0-alpha.36-linux-amd64.tar.gz -O sing-box.tar.gz
           tar -xzf sing-box.tar.gz
           sudo mv sing-box-*/sing-box /usr/local/bin/sing-box
           sudo chmod +x /usr/local/bin/sing-box
+
+          echo "Installed version:"
           sing-box version
 
-      - name: 编译 source → binary (.srs)
+      - name: 编译 JSON → SRS
         run: |
+          set -e
+
+          rm -rf compiled-rules
           mkdir -p compiled-rules
-          
-          echo "开始查找并转换 .json 文件..."
-          
-          find local -type f -name "*.json" | while read -r json_file; do
-            # 计算目标路径，保留目录结构
+
+          echo "开始编译..."
+
+          find local -type f -name "*.json" -print0 |
+          while IFS= read -r -d '' json_file; do
+
             srs_file="compiled-rules/${json_file#local/}"
             srs_file="${srs_file%.json}.srs"
-            
+
             mkdir -p "$(dirname "$srs_file")"
-            
-            echo "转换: $json_file → $srs_file"
-            sing-box rule-set compile --output "$srs_file" "$json_file"
+
+            echo "$json_file -> $srs_file"
+
+            sing-box rule-set compile \
+              --output "$srs_file" \
+              "$json_file"
+
           done
 
-          echo "转换完成！生成的 .srs 文件："
-          find compiled-rules -name "*.srs" | head -30 || echo "未找到 .srs 文件"
+          echo "完成！"
+
+          find compiled-rules -name "*.srs" | sort
+
+      - name: 推送到 releases 分支
+        run: |
+          set -e
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin
+
+          if git ls-remote --exit-code --heads origin releases; then
+            git checkout releases
+            git pull origin releases
+          else
+            git checkout --orphan releases
+            git rm -rf . || true
+          fi
+
+          find . \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name ".git" \
+            -exec rm -rf {} +
+
+          cp -r "$GITHUB_WORKSPACE"/compiled-rules/* .
+
+          touch .nojekyll
+
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git commit -m "Update rule sets"
+
+          git push origin releases
