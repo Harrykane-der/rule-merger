@@ -42,6 +42,7 @@ class RulesMerger:
         self.config = self._load_config(config_path)
         self.mihomo_path = MIHOMO_PATH
         self.sing_box_path = SING_BOX_PATH
+        # 核心互转路由表：涵盖了所有 Classical、Domain、Ipcidr 和 Sing-box 之间的交叉对调转换
         self._transformers = {
             ('classical', 'ipcidr'): self._classical_to_ipcidr,
             ('classical', 'domain'): self._classical_to_domain,
@@ -167,10 +168,12 @@ class RulesMerger:
         source_behavior = self._normalize_behavior(source_behavior)
         target_behavior = self._normalize_behavior(target_behavior)
 
+        # 当输入本身是 Dict 结构（如 sing-box 格式）
         if isinstance(rule, dict):
             if target_behavior == 'sing-box':
-                return [rule]
+                return [rule] # 目标也是 sing-box，完美原样放行
             
+            # 如果目标是 classical / domain / ipcidr 文本，进行解包翻译
             transformer = self._transformers.get(('sing-box', target_behavior))
             if transformer:
                 return transformer(json.dumps(rule))
@@ -180,6 +183,7 @@ class RulesMerger:
         if source_behavior == target_behavior:
             return [rule]
 
+        # 文本格式互转路由拦截
         transformer = self._transformers.get((source_behavior, target_behavior))
         if not transformer: return []
         transformed = transformer(rule)
@@ -226,6 +230,7 @@ class RulesMerger:
                 rules = self._process_source(source_config, target_behavior)
                 raw_collected.extend(rules)
 
+            # 区分：原生一整块的 Dict 规则与纯文本转换出的散碎规则字符串
             dict_rules = [r for r in raw_collected if isinstance(r, dict)]
             str_rules = [r for r in raw_collected if isinstance(r, str)]
 
@@ -247,7 +252,7 @@ class RulesMerger:
             )
 
     def _compile_final_sing_box_list(self, converted_str_rules: List[str], original_dict_rules: List[Dict]) -> List[Dict]:
-        # 1. 提取并合并【由文本格式转换出来的】零散碎片 JSON（进碎片大桶）
+        # 1. 处理从文本形式转化而来的散碎碎片规则（扔进大桶大合并）
         bucket = {key: [] for key in SING_BOX_LIST_FIELDS}
         passthrough_rules = []
 
@@ -261,24 +266,24 @@ class RulesMerger:
 
         compacted_results = self._compact_sing_box_rules(bucket)
         
-        # 2. 对原装完整的 Dict 规则（例如 ablock）进行“保留整体大框架”下的同类项融合去重
+        # 2. 原生大 Dict 规则（如 ablock.json）深度合并、去重、排序且不散架
         merged_original_dict = {}
         advanced_dict_rules = []
 
         for r in original_dict_rules:
-            # 带有 logical 等高级控制逻辑的 Dict 不做破坏性强合，直接单列
+            # 包含嵌套逻辑/非标字段等，单独放行，不破坏其高级结构
             if r.get('type') == 'logical' or not all(k in SING_BOX_LIST_FIELDS for k in r.keys()):
                 advanced_dict_rules.append(r)
                 continue
             
-            # 将多来源中标准的、可同类合并的字段搜集到大蓄水池中
+            # 提取所有标准的同类项列表并融入聚合池
             for key in SING_BOX_LIST_FIELDS:
                 if key in r:
                     if key not in merged_original_dict:
                         merged_original_dict[key] = []
                     merged_original_dict[key].extend(self._as_list(r[key]))
 
-        # 对搜集上来的 Dict 级列表进行去重和字母表升序排序
+        # 对聚合后的 Dict 内部的各大类别单独执行无损去重与字母表升序排序
         final_merged_dict = {}
         for key, values in merged_original_dict.items():
             if values:
@@ -293,14 +298,14 @@ class RulesMerger:
                 
                 final_merged_dict[key] = unique_sorted
 
-        # 组装最后的总规则池
+        # 装配组装池
         all_rules_pool = compacted_results + passthrough_rules + advanced_dict_rules
         
-        # 将清洗整合完毕的 Dict 聚合块塞入
+        # 将清洗与重新合并排序完的完整大框架 Dict 追加入池
         if final_merged_dict:
             all_rules_pool.append(final_merged_dict)
 
-        # 3. 终极精准特征去重（排除可能导致完全重复的模块）
+        # 3. 精准特征指纹去重（做最后的兜底，防止完全重复的模块被写出）
         seen_signatures = set()
         unique_final_rules = []
         for r in all_rules_pool:
@@ -400,6 +405,7 @@ class RulesMerger:
             json.dump(rule_set, f, ensure_ascii=False, indent=2)
             f.write('\n')
 
+    # ========================== 核心转换函数群 ==========================
     def _classical_to_ipcidr(self, rule: str) -> Optional[str]:
         parts = rule.split(',')
         if len(parts) < 2: return None
@@ -532,6 +538,7 @@ class RulesMerger:
     def _validate_domain_rule(self, rule: str) -> Optional[str]:
         return rule if DOMAIN_PATTERN.match(rule[2:] if rule.startswith('+.') else rule) else None
 
+    # ========================== 二进制处理后端群 ==========================
     def _read_mrs_file(self, input_path: str, behavior: str) -> List[str]:
         if not self.mihomo_path: return []
         output_path = self._make_temp_path('.txt')
@@ -558,7 +565,7 @@ class RulesMerger:
 
     def _convert_to_mrs(self, input_path: str, output_path: str, behavior: str) -> bool:
         if not self.mihomo_path: 
-            self.logger.error("未找到 mihomo 执行路径，无法编译二进制 MRS")
+            self.logger.error("未找到 mihomo 执行路径，无法编译 MRS")
             return False
         res = subprocess.run([self.mihomo_path, 'convert-ruleset', behavior, 'text', input_path, output_path], capture_output=True, text=True)
         if res.returncode != 0:
@@ -568,7 +575,7 @@ class RulesMerger:
 
     def _convert_to_srs(self, input_path: str, output_path: str) -> bool:
         if not self.sing_box_path: 
-            self.logger.error("未找到 sing-box 执行路径，无法编译二进制 SRS")
+            self.logger.error("未找到 sing-box 执行路径，无法编译 SRS")
             return False
         res = subprocess.run([self.sing_box_path, 'rule-set', 'compile', '--output', output_path, input_path], capture_output=True, text=True)
         if res.returncode != 0:
