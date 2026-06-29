@@ -27,9 +27,9 @@ PORT_PATTERN = re.compile(r'^\d+(?:-\d+)?$')
 
 MIHOMO_PATH = 'mihomo'
 SING_BOX_PATH = 'sing-box'
-SING_BOX_RULESET_VERSION = 5
+SING_BOX_RULESET_VERSION = 4
 
-# 扩展 sing-box 的原子字段列表，加入 port 和 network
+# sing-box 的原子字段列表
 SING_BOX_LIST_FIELDS = (
     'domain',
     'domain_suffix',
@@ -386,8 +386,23 @@ class RulesMerger:
             raise
 
     def _get_real_rule_count(self, rules: List[str], behavior: str) -> int:
-        """计算真实的 sing-box rules 展开项总数"""
-        return len(self._to_sing_box_rules(rules, behavior))
+        """
+        计算真实的原子规则条数。
+        遍历最终生成的所有 rules 块，如果是同类合并块，则累加数组内各独立条目的总和。
+        """
+        total = 0
+        final_rules = self._to_sing_box_rules(rules, behavior)
+        for r in final_rules:
+            if r.get('type') == 'logical':
+                total += 1
+                continue
+            # 计算各个列表字段包含的元素数量
+            field_counts = [len(r[k]) for k in SING_BOX_LIST_FIELDS if k in r and isinstance(r[k], list)]
+            if field_counts:
+                total += sum(field_counts)
+            else:
+                total += 1
+        return total
 
     def _log_generated_rule_file(self, rule_format: str, output_path: str, rule_count: int) -> None:
         self.logger.info(f"已生成 {rule_format} 规则文件: {output_path}, 共 {rule_count} 条规则")
@@ -409,7 +424,7 @@ class RulesMerger:
             f.write('\n')
 
     def _to_sing_box_rules(self, rules: List[str], behavior: str) -> List[Dict[str, Any]]:
-        """将当前规则转换为原子级的 sing-box headless rule 列表。"""
+        """将当前规则转换为经过同类型归类合并的 sing-box rule 列表。"""
         sing_box_rule = self._new_sing_box_rule_bucket()
 
         if behavior == 'sing-box':
@@ -433,7 +448,7 @@ class RulesMerger:
 
         return self._compact_sing_box_rules(sing_box_rule)
 
-    def _new_sing_box_rule_bucket(self) -> Dict[str, List[str]]:
+    def _new_sing_box_rule_bucket(self) -> Dict[str, List[Any]]:
         return {key: [] for key in SING_BOX_LIST_FIELDS}
 
     def _can_compact_sing_box_rule(self, rule: Dict[str, Any]) -> bool:
@@ -454,17 +469,20 @@ class RulesMerger:
             bucket[key].extend(self._as_list(rule.get(key)))
 
     def _compact_sing_box_rules(self, bucket: Dict[str, List[Any]]) -> List[Dict[str, List[Any]]]:
-        """将聚合的规则解构为“原子级单体规则对象（Atomic Rows）”列表。"""
-        atomic_rules = []
+        """
+        【关键变更点】
+        将属于同一个类型字段（如 domain、ip_cidr、port 等）的所有原子值合并到单个对象中。
+        生成结果：[ {"domain": ["a.com", "b.com"]}, {"ip_cidr": ["1.1.1.1/32"]} ] 
+        """
+        compacted_rules = []
         for key in SING_BOX_LIST_FIELDS:
             values = bucket.get(key, [])
             if values:
-                # 独立去重并排序，然后一条一条拆分成独立对象
-                for unique_val in sorted(set(values), key=lambda x: str(x)):
-                    # sing-box 规则集中，port 可以是数字或带范围的字符串，保持原样。
-                    # network 字段必须是规则数组，这里保持原子结构
-                    atomic_rules.append({key: [unique_val]})
-        return atomic_rules
+                # 针对该类型下的数据进行全量原子级去重和排序
+                unique_sorted_values = sorted(set(values), key=lambda x: str(x))
+                # 深度聚合：同类型合并为单条大规则对象
+                compacted_rules.append({key: unique_sorted_values})
+        return compacted_rules
 
     def _to_sing_box_item(self, rule: str, behavior: str) -> Optional[tuple[str, Any]]:
         if behavior == 'domain':
@@ -485,7 +503,6 @@ class RulesMerger:
         rule_type = parts[0]
         value = parts[1]
         
-        # 扩展映射，映射到 sing-box 的标准字段
         mapping = {
             'DOMAIN': 'domain',
             'DOMAIN-SUFFIX': 'domain_suffix',
@@ -502,7 +519,6 @@ class RulesMerger:
             return None
             
         if target_key == 'port':
-            # 如果是纯数字则转成 int 类型，如果是范围（例如 80-443）则保留为字符串
             return target_key, int(value) if value.isdigit() else value
             
         return target_key, value
@@ -632,10 +648,8 @@ class RulesMerger:
                 if isinstance(ipcidr, str):
                     prefix = "IP-CIDR6" if ':' in ipcidr else "IP-CIDR"
                     rules.append(f"{prefix},{ipcidr}")
-            # 反向将 sing-box 的 port 提取回 classical 格式
             for port in self._as_list(item.get('port')):
                 rules.append(f"PORT,{port}")
-            # 反向将 sing-box 的 network 提取回 classical 格式
             for network in self._as_list(item.get('network')):
                 if isinstance(network, str):
                     rules.append(f"NETWORK,{network.lower()}")
@@ -657,7 +671,7 @@ class RulesMerger:
         return [value]
     
     def _validate_classical_rule(self, rule: str) -> Optional[str]:
-        """验证经典规则格式 (已加入 PORT 和 NETWORK)"""
+        """验证经典规则格式"""
         try:
             parts = rule.split(',')
             if len(parts) < 2:
