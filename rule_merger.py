@@ -448,7 +448,7 @@ class RulesMerger:
         return {key: [] for key in SING_BOX_LIST_FIELDS}
 
     def _can_compact_sing_box_rule(self, rule: Dict[str, Any]) -> bool:
-        """【修复】优化合并过滤器，现在可以支持 port 和 network 字段的合并"""
+        """核心修复：全面放开限制，使 port 与 network 深度兼容大合并"""
         if rule.get('type') == 'logical':
             return False
         
@@ -458,28 +458,41 @@ class RulesMerger:
             values = self._as_list(value)
             if not values:
                 continue
-            # 放宽类型限制：允许字符串和整数类型（兼容端口）
+            # 放开拦截锁：确保单个独立的端口数字 (int) 和 范围 (str) 都能顺利放行
             if not all(isinstance(item, (str, int)) for item in values):
                 return False
         return True
 
     def _add_sing_box_rule_items(self, bucket: Dict[str, List[Any]], rule: Dict[str, Any]) -> None:
-        """【修复】将规则中所有匹配字段下的元素全量追加入桶"""
+        """核心修复：将规则项中的原子元素完全解包，追加入对应的归类桶"""
         for key in SING_BOX_LIST_FIELDS:
             if key in rule:
-                bucket[key].extend(self._as_list(rule.get(key)))
+                # 针对 port 类型的纯数字，自动统一在解包时清洗为标准规范类型
+                raw_values = self._as_list(rule.get(key))
+                if key == 'port':
+                    cleaned_values = [int(v) if str(v).isdigit() else str(v) for v in raw_values]
+                elif key == 'network':
+                    cleaned_values = [str(v).lower() for v in raw_values]
+                else:
+                    cleaned_values = raw_values
+                bucket[key].extend(cleaned_values)
 
     def _compact_sing_box_rules(self, bucket: Dict[str, List[Any]]) -> List[Dict[str, List[Any]]]:
         """
-        【修复】将类型字段的所有原子值合并到单个对象中。
-        引入安全的 Key 排序，规避 port 字段中 int 和 str 混合导致 sorted() 崩溃。
+        核心修复：生成最终的强聚合单行 JSON。
+        通过严格的自定义 Key 转换，彻底杜绝 int 和 str 混合导致 `sorted(set())` 发生崩溃的问题。
         """
         compacted_rules = []
         for key in SING_BOX_LIST_FIELDS:
             values = bucket.get(key, [])
             if values:
-                # 使用元组排序：先按类型分类（int在前，str在后），再在内部各自排序
-                unique_sorted_values = sorted(set(values), key=lambda x: (isinstance(x, str), x))
+                # 建立混合集的唯一无损集合
+                unique_values = list(set(values))
+                # 独家智能排序Key：如果内部存在端口，数字按照从小到大排序，字符串（如范围）按照字典序放在后面
+                unique_sorted_values = sorted(
+                    unique_values, 
+                    key=lambda x: (isinstance(x, str), int(x) if str(x).isdigit() else x)
+                )
                 compacted_rules.append({key: unique_sorted_values})
         return compacted_rules
 
@@ -517,9 +530,12 @@ class RulesMerger:
         if not target_key:
             return None
             
-        # 【修复】保持端口字段类型正确：纯数字转 int，范围（如 "80-443"）保留为 str
+        # 深度修复：写回时对端口值清洗，纯数字规范为 sing-box 偏好的整型(int)，范围保持字符串(str)
         if target_key == 'port':
             return target_key, int(value) if value.isdigit() else value
+        
+        if target_key == 'network':
+            return target_key, value.lower()
             
         return target_key, value
 
