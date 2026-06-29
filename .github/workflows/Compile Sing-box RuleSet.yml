@@ -25,7 +25,7 @@ jobs:
 
       - name: 安装 sing-box
         run: |
-          wget -qO- https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-latest-linux-amd64.tar.gz | tar -xz
+          wget -qO- https://github.com/SagerNet/sing-box/releases/download/v1.14.0-alpha.36/sing-box-1.14.0-alpha.36-linux-amd64.tar.gz | tar -xz
           sudo mv sing-box-*/sing-box /usr/local/bin/sing-box
           sudo chmod +x /usr/local/bin/sing-box
           sing-box version
