@@ -1,26 +1,21 @@
-name: Build Sing-box Rule Sets (Pro Release)
+name: Unified Rule Build (Singbox + Mihomo)
 
 on:
+  schedule:
+    - cron: '0 */1 * * *'
+  workflow_dispatch:
   push:
     branches: [main, master]
     paths:
       - "local/**/*.json"
-
-  pull_request:
-    branches: [main, master]
-    paths:
-      - "local/**/*.json"
-
-  workflow_dispatch:
-
-  schedule:
-    - cron: "0 4 * * *"
+      - "rule_merger.py"
+      - "**/*.py"
 
 permissions:
   contents: write
 
 concurrency:
-  group: singbox-rule-build
+  group: unified-rule-build
   cancel-in-progress: true
 
 jobs:
@@ -28,37 +23,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # =========================
+      # Checkout
+      # =========================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # =========================
+      # Python
+      # =========================
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # =========================
+      # Mihomo
+      # =========================
+      - name: Install Mihomo
+        run: |
+          set -e
+          LATEST_TAG=$(curl -fsSL https://github.com/MetaCubeX/mihomo/releases/latest/download/version.txt)
+          curl -fsSL -o mihomo.gz https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/mihomo-linux-amd64-${LATEST_TAG}.gz
+          gunzip mihomo.gz
+          sudo mv mihomo /usr/local/bin/
+          chmod +x /usr/local/bin/mihomo
+          mihomo -v
+
+      # =========================
+      # Sing-box
+      # =========================
       - name: Install sing-box
         run: |
           set -e
-          wget -q https://github.com/SagerNet/sing-box/releases/download/v1.14.0-alpha.36/sing-box-1.14.0-alpha.36-linux-amd64.tar.gz -O sb.tar.gz
+          VERSION=1.14.0-alpha.36
+          curl -fsSL -o sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-linux-amd64.tar.gz
           tar -xzf sb.tar.gz
-          sudo mv sing-box-*/sing-box /usr/local/bin/sing-box
+          sudo mv sing-box-${VERSION}-linux-amd64/sing-box /usr/local/bin/
           sing-box version
 
-      - name: Build rules
+      # =========================
+      # Build Sing-box rules
+      # =========================
+      - name: Build Sing-box rules
         run: |
           set -e
 
-          BUILD_DIR="/tmp/singbox-build"
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR"
+          SB_OUT="/tmp/release/singbox"
+          rm -rf "$SB_OUT"
+          mkdir -p "$SB_OUT"
 
           mapfile -d '' files < <(find local -type f -name "*.json" -print0)
 
-          echo "JSON files: ${#files[@]}"
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No rule files"
-            exit 1
-          fi
+          echo "Sing-box rules: ${#files[@]}"
 
           for f in "${files[@]}"; do
-            out="$BUILD_DIR/${f#local/}"
+            out="$SB_OUT/${f#local/}"
             out="${out%.json}.srs"
 
             mkdir -p "$(dirname "$out")"
@@ -70,8 +97,23 @@ jobs:
               "$f"
           done
 
-          find "$BUILD_DIR" -type f -name "*.srs" | sort
+          date -u +"%Y%m%d-%H%M%S" > "$SB_OUT/VERSION"
 
+      # =========================
+      # Mihomo rule merger
+      # =========================
+      - name: Run Mihomo merger
+        run: |
+          set -e
+
+          export OUTPUT_DIR="/tmp/release/mihomo"
+          mkdir -p "$OUTPUT_DIR"
+
+          python rule_merger.py
+
+      # =========================
+      # Publish to release branch
+      # =========================
       - name: Publish to release branch
         run: |
           set -e
@@ -79,11 +121,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          BUILD_DIR="/tmp/singbox-build"
-
           git fetch origin
 
-          # 切换 release 分支（不存在则创建）
           if git show-ref --verify --quiet refs/remotes/origin/release; then
             git checkout release
             git pull origin release
@@ -91,16 +130,17 @@ jobs:
             git checkout -b release
           fi
 
-          # 清空旧文件（保留 git）
+          # 清空旧内容（保留 git）
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
-          # 写入新规则
-          cp -r "$BUILD_DIR"/. .
+          # 创建目录结构
+          mkdir -p singbox mihomo
 
-          # 版本标记
-          VERSION="$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD || echo unknown)"
-          echo "$VERSION" > VERSION
+          # 写入构建结果
+          cp -r /tmp/release/singbox/* singbox/
+          cp -r /tmp/release/mihomo/* mihomo/
 
+          # 提交
           git add -A
 
           if git diff --cached --quiet; then
@@ -108,5 +148,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update rule sets $VERSION"
+          git commit -m "Unified rule update $(date -u +%Y%m%d-%H%M%S)"
           git push origin release
