@@ -386,17 +386,13 @@ class RulesMerger:
             raise
 
     def _get_real_rule_count(self, rules: List[str], behavior: str) -> int:
-        """
-        计算真实的原子规则条数。
-        遍历最终生成的所有 rules 块，如果是同类合并块，则累加数组内各独立条目的总和。
-        """
+        """计算真实的原子规则条数。"""
         total = 0
         final_rules = self._to_sing_box_rules(rules, behavior)
         for r in final_rules:
             if r.get('type') == 'logical':
                 total += 1
                 continue
-            # 计算各个列表字段包含的元素数量
             field_counts = [len(r[k]) for k in SING_BOX_LIST_FIELDS if k in r and isinstance(r[k], list)]
             if field_counts:
                 total += sum(field_counts)
@@ -452,35 +448,38 @@ class RulesMerger:
         return {key: [] for key in SING_BOX_LIST_FIELDS}
 
     def _can_compact_sing_box_rule(self, rule: Dict[str, Any]) -> bool:
+        """【修复】优化合并过滤器，现在可以支持 port 和 network 字段的合并"""
         if rule.get('type') == 'logical':
             return False
-        if len(rule) != 1:
-            return False
-        key, value = next(iter(rule.items()))
-        values = self._as_list(value)
-        return (
-            key in SING_BOX_LIST_FIELDS and
-            bool(values) and
-            all(isinstance(item, (str, int)) for item in values)
-        )
+        
+        for key, value in rule.items():
+            if key not in SING_BOX_LIST_FIELDS:
+                return False
+            values = self._as_list(value)
+            if not values:
+                continue
+            # 放宽类型限制：允许字符串和整数类型（兼容端口）
+            if not all(isinstance(item, (str, int)) for item in values):
+                return False
+        return True
 
     def _add_sing_box_rule_items(self, bucket: Dict[str, List[Any]], rule: Dict[str, Any]) -> None:
+        """【修复】将规则中所有匹配字段下的元素全量追加入桶"""
         for key in SING_BOX_LIST_FIELDS:
-            bucket[key].extend(self._as_list(rule.get(key)))
+            if key in rule:
+                bucket[key].extend(self._as_list(rule.get(key)))
 
     def _compact_sing_box_rules(self, bucket: Dict[str, List[Any]]) -> List[Dict[str, List[Any]]]:
         """
-        【关键变更点】
-        将属于同一个类型字段（如 domain、ip_cidr、port 等）的所有原子值合并到单个对象中。
-        生成结果：[ {"domain": ["a.com", "b.com"]}, {"ip_cidr": ["1.1.1.1/32"]} ] 
+        【修复】将类型字段的所有原子值合并到单个对象中。
+        引入安全的 Key 排序，规避 port 字段中 int 和 str 混合导致 sorted() 崩溃。
         """
         compacted_rules = []
         for key in SING_BOX_LIST_FIELDS:
             values = bucket.get(key, [])
             if values:
-                # 针对该类型下的数据进行全量原子级去重和排序
-                unique_sorted_values = sorted(set(values), key=lambda x: str(x))
-                # 深度聚合：同类型合并为单条大规则对象
+                # 使用元组排序：先按类型分类（int在前，str在后），再在内部各自排序
+                unique_sorted_values = sorted(set(values), key=lambda x: (isinstance(x, str), x))
                 compacted_rules.append({key: unique_sorted_values})
         return compacted_rules
 
@@ -518,6 +517,7 @@ class RulesMerger:
         if not target_key:
             return None
             
+        # 【修复】保持端口字段类型正确：纯数字转 int，范围（如 "80-443"）保留为 str
         if target_key == 'port':
             return target_key, int(value) if value.isdigit() else value
             
