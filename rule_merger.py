@@ -175,6 +175,36 @@ class RulesMerger:
                 result.append(f"{start}-{end}")
         return result
 
+    @staticmethod
+    def _deduplicate_domains(domains: List[str]) -> List[str]:
+        """
+        域名智能去重：如果存在更具体的子域名，则移除更宽泛的父域名。
+        例如：['baidu.com', 'ad.baidu.com'] -> ['ad.baidu.com']
+        """
+        if not domains:
+            return []
+        # 按域名长度降序排序（长的更具体）
+        sorted_domains = sorted(set(domains), key=lambda x: len(x), reverse=True)
+        result = []
+        for domain in sorted_domains:
+            # 检查当前域名是否是某个已保留域名的子域名
+            is_subdomain = False
+            for kept in result:
+                if domain.endswith('.' + kept) or domain == kept:
+                    is_subdomain = True
+                    break
+            if not is_subdomain:
+                # 检查当前域名是否包含其他已保留域名作为后缀
+                should_keep = True
+                for kept in result:
+                    if kept.endswith('.' + domain) or kept == domain:
+                        should_keep = False
+                        break
+                if should_keep:
+                    result.append(domain)
+        # 按字母顺序排序
+        return sorted(result)
+
     # -------------------- 规则获取与解析 --------------------
     def _fetch_rules_from_source(self, source: Dict, target_behavior: str) -> List[Any]:
         rule_format = source.get('format', 'yaml')
@@ -362,7 +392,6 @@ class RulesMerger:
                 items = [x.strip() for x in port_expr.split('/') if x.strip()]
             else:
                 items = [port_expr]
-            # 去重 -> 排序 -> 合并范围
             unique_items = list(dict.fromkeys(items))
             sorted_items = self._sort_port_items(unique_items)
             merged_items = self._merge_port_items(sorted_items)
@@ -560,54 +589,10 @@ class RulesMerger:
                         logger.warning(f"未知类型规则，已丢弃: {r}")
                         self._stats['dropped'] += 1
 
-                seen = set()
-                unique_dict = []
-                for r in dict_rules:
-                    sig = self._normalize_rule_signature(r)
-                    if sig not in seen:
-                        seen.add(sig)
-                        unique_dict.append(r)
-                    else:
-                        self._stats['duplicates'] += 1
-
-                final_rules = self._compile_final_sing_box_list(unique_dict)
+                final_rules = self._compile_final_sing_box_list(dict_rules)
             else:
                 str_rules = [str(r) for r in all_rules if r is not None]
-                seen = set()
-                unique_strs = []
-                for r in str_rules:
-                    sig = self._normalize_rule_signature(r)
-                    if sig not in seen:
-                        seen.add(sig)
-                        unique_strs.append(r)
-                    else:
-                        self._stats['duplicates'] += 1
-                final_rules = unique_strs
-
-                # 跨规则合并 DST-PORT（适用于 classical 输出）
-                if target_behavior == 'classical':
-                    dst_port_rules = []
-                    other_rules = []
-                    for r in final_rules:
-                        if isinstance(r, str) and r.startswith('DST-PORT,'):
-                            dst_port_rules.append(r)
-                        else:
-                            other_rules.append(r)
-                    if dst_port_rules:
-                        all_items = []
-                        for rule in dst_port_rules:
-                            expr = rule.split(',', 1)[1]
-                            if '/' in expr:
-                                items = [x.strip() for x in expr.split('/') if x.strip()]
-                            else:
-                                items = [expr.strip()]
-                            all_items.extend(items)
-                        unique_items = list(dict.fromkeys(all_items))
-                        sorted_items = self._sort_port_items(unique_items)
-                        merged_items = self._merge_port_items(sorted_items)
-                        merged_dst_port = "DST-PORT," + "/".join(merged_items)
-                        final_rules = other_rules + [merged_dst_port]
-                        logger.info(f"合并 {len(dst_port_rules)} 条 DST-PORT 规则为 1 条，端口已排序并合并")
+                final_rules = self._deduplicate_and_merge_classical(str_rules)
 
             logger.info(f"去重后规则数: {len(final_rules)}, 重复项: {self._stats['duplicates']}")
 
@@ -620,7 +605,112 @@ class RulesMerger:
                 config.get('version', SING_BOX_RULESET_VERSION)
             )
 
+    def _deduplicate_and_merge_classical(self, rules: List[str]) -> List[str]:
+        """对 Classical 规则进行智能去重和合并"""
+        # 按前缀分类
+        domain_rules = []
+        domain_suffix_rules = []
+        domain_keyword_rules = []
+        domain_regex_rules = []
+        ip_cidr_rules = []
+        dst_port_rules = []
+        network_rules = []
+        other_rules = []
+
+        for rule in rules:
+            if not isinstance(rule, str):
+                other_rules.append(rule)
+                continue
+            if rule.startswith('DOMAIN,'):
+                domain_rules.append(rule)
+            elif rule.startswith('DOMAIN-SUFFIX,'):
+                domain_suffix_rules.append(rule)
+            elif rule.startswith('DOMAIN-KEYWORD,'):
+                domain_keyword_rules.append(rule)
+            elif rule.startswith('DOMAIN-REGEX,'):
+                domain_regex_rules.append(rule)
+            elif rule.startswith('IP-CIDR') or rule.startswith('IP-CIDR6,'):
+                ip_cidr_rules.append(rule)
+            elif rule.startswith('DST-PORT,'):
+                dst_port_rules.append(rule)
+            elif rule.startswith('NETWORK,'):
+                network_rules.append(rule)
+            else:
+                other_rules.append(rule)
+
+        # 域名智能去重
+        deduped_domain = self._deduplicate_domain_rules(domain_rules)
+        deduped_domain_suffix = self._deduplicate_domain_rules(domain_suffix_rules)
+
+        # 端口合并去重
+        merged_dst_port = self._merge_dst_port_rules(dst_port_rules)
+
+        # 其他规则简单去重
+        def dedup_list(items):
+            seen = set()
+            result = []
+            for item in items:
+                sig = self._normalize_rule_signature(item)
+                if sig not in seen:
+                    seen.add(sig)
+                    result.append(item)
+                else:
+                    self._stats['duplicates'] += 1
+            return result
+
+        result = []
+        result.extend(deduped_domain)
+        result.extend(deduped_domain_suffix)
+        result.extend(dedup_list(domain_keyword_rules))
+        result.extend(dedup_list(domain_regex_rules))
+        result.extend(dedup_list(ip_cidr_rules))
+        if merged_dst_port:
+            result.append(merged_dst_port)
+        result.extend(dedup_list(network_rules))
+        result.extend(dedup_list(other_rules))
+
+        return result
+
+    def _deduplicate_domain_rules(self, rules: List[str]) -> List[str]:
+        """对域名规则进行智能去重"""
+        if not rules:
+            return []
+        # 提取域名
+        domain_map = {}
+        for rule in rules:
+            parts = rule.split(',', 1)
+            if len(parts) == 2:
+                domain = parts[1].strip()
+                domain_map[domain] = rule
+        if not domain_map:
+            return rules
+        # 智能去重
+        deduped_domains = self._deduplicate_domains(list(domain_map.keys()))
+        return [domain_map[d] for d in deduped_domains]
+
+    def _merge_dst_port_rules(self, rules: List[str]) -> Optional[str]:
+        """合并所有 DST-PORT 规则"""
+        if not rules:
+            return None
+        all_items = []
+        for rule in rules:
+            parts = rule.split(',', 1)
+            if len(parts) == 2:
+                expr = parts[1]
+                if '/' in expr:
+                    items = [x.strip() for x in expr.split('/') if x.strip()]
+                else:
+                    items = [expr.strip()]
+                all_items.extend(items)
+        if not all_items:
+            return None
+        unique_items = list(dict.fromkeys(all_items))
+        sorted_items = self._sort_port_items(unique_items)
+        merged_items = self._merge_port_items(sorted_items)
+        return "DST-PORT," + "/".join(merged_items)
+
     def _compile_final_sing_box_list(self, rules: List[Dict]) -> List[Dict]:
+        """编译最终 Sing-Box 规则列表（含端口优化和域名去重）"""
         bucket = {key: [] for key in SING_BOX_LIST_FIELDS}
         passthrough_rules = []
 
@@ -630,19 +720,22 @@ class RulesMerger:
             else:
                 passthrough_rules.append(rule)
 
-        # ---- 对端口进行全局合并优化 ----
+        # 域名智能去重
+        if bucket['domain']:
+            bucket['domain'] = self._deduplicate_domains([str(d) for d in bucket['domain']])
+        if bucket['domain_suffix']:
+            bucket['domain_suffix'] = self._deduplicate_domains([str(s) for s in bucket['domain_suffix']])
+
+        # 端口合并优化
         if bucket['port'] or bucket['port_range']:
-            # 收集所有端口项（port_range 中的 : 转回 -）
             all_port_items = []
             for p in bucket['port']:
                 all_port_items.append(str(p))
             for pr in bucket['port_range']:
                 all_port_items.append(str(pr).replace(':', '-'))
-            # 去重、排序、合并范围
             unique_items = list(dict.fromkeys(all_port_items))
             sorted_items = self._sort_port_items(unique_items)
             merged_items = self._merge_port_items(sorted_items)
-            # 分类为 port 和 port_range
             new_port = []
             new_port_range = []
             for item in merged_items:
@@ -662,6 +755,8 @@ class RulesMerger:
             if sig not in seen:
                 seen.add(sig)
                 unique.append(r)
+            else:
+                self._stats['duplicates'] += 1
         return unique
 
     def _can_compact_sing_box_rule(self, rule: Dict[str, Any]) -> bool:
