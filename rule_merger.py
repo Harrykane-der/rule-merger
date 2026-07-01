@@ -135,6 +135,21 @@ class RulesMerger:
             return s
         return str(rule)
 
+    @staticmethod
+    def _sort_port_items(items: List[str]) -> List[str]:
+        """对端口项（单端口或范围）进行排序，按起始端口升序"""
+        def key_func(item: str) -> int:
+            # 提取起始端口号
+            if '-' in item:
+                start = item.split('-')[0].strip()
+            else:
+                start = item.strip()
+            try:
+                return int(start)
+            except ValueError:
+                return 0  # 容错
+        return sorted(items, key=key_func)
+
     # -------------------- 规则获取与解析 --------------------
     def _fetch_rules_from_source(self, source: Dict, target_behavior: str) -> List[Any]:
         rule_format = source.get('format', 'yaml')
@@ -423,7 +438,7 @@ class RulesMerger:
                 result.append(str(ip))
         return result
 
-    # 修改：同时提取 port 和 port_range，合并为一条 DST-PORT，并去重（单规则内）
+    # 修改：同时提取 port 和 port_range，合并为一条 DST-PORT，并去重 + 排序
     def _sing_box_to_classical(self, rule_str: str) -> List[str]:
         parsed = self._parse_sing_box_rule(rule_str)
         if not parsed:
@@ -445,16 +460,17 @@ class RulesMerger:
             for n in self._as_list(item.get('network')):
                 result.append(f"NETWORK,{str(n).lower()}")
 
-            # 合并 port 和 port_range，并去重（单规则内）
+            # 合并 port 和 port_range，并去重 + 排序
             port_items = []
             for p in self._as_list(item.get('port')):
                 port_items.append(str(p))
             for pr in self._as_list(item.get('port_range')):
                 port_items.append(str(pr).replace(':', '-'))
             if port_items:
-                # 使用 dict.fromkeys 去重并保留顺序
+                # 去重保留顺序，然后排序
                 unique_items = list(dict.fromkeys(port_items))
-                joined = "/".join(unique_items)
+                sorted_items = self._sort_port_items(unique_items)
+                joined = "/".join(sorted_items)
                 result.append(f"DST-PORT,{joined}")
         return result
 
@@ -550,7 +566,7 @@ class RulesMerger:
                         self._stats['duplicates'] += 1
                 final_rules = unique_strs
 
-                # ---- 新增：跨规则合并 DST-PORT ----
+                # ---- 跨规则合并 DST-PORT ----
                 if target_behavior == 'classical':
                     dst_port_rules = []
                     other_rules = []
@@ -568,11 +584,12 @@ class RulesMerger:
                             else:
                                 items = [expr.strip()]
                             all_items.extend(items)
-                        # 去重保留顺序
+                        # 去重保留顺序，然后排序
                         unique_items = list(dict.fromkeys(all_items))
-                        merged_dst_port = "DST-PORT," + "/".join(unique_items)
+                        sorted_items = self._sort_port_items(unique_items)
+                        merged_dst_port = "DST-PORT," + "/".join(sorted_items)
                         final_rules = other_rules + [merged_dst_port]
-                        logger.info(f"合并 {len(dst_port_rules)} 条 DST-PORT 规则为 1 条")
+                        logger.info(f"合并 {len(dst_port_rules)} 条 DST-PORT 规则为 1 条，端口已排序")
 
             logger.info(f"去重后规则数: {len(final_rules)}, 重复项: {self._stats['duplicates']}")
 
@@ -643,7 +660,7 @@ class RulesMerger:
                 else:
                     sorted_vals = sorted(int(v) for v in unique)
             elif key == 'port_range':
-                # 按字符串排序
+                # 按字符串排序（范围起始端口）
                 sorted_vals = sorted(str(v) for v in unique)
             else:
                 sorted_vals = sorted(unique, key=lambda x: str(x))
