@@ -82,6 +82,11 @@
       url: https://raw.githubusercontent.com/Harrykane-der/my-rules/refs/heads/main/ablock.json
       format: json
       behavior: singbox
+   ablock.yaml:
+      type: http
+      url: https://raw.githubusercontent.com/Harrykane-der/my-rules/refs/heads/main/ablock.yaml
+      format: yaml
+      behavior: classical
 
 - path: output/ablock.json
   format: json
