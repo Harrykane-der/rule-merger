@@ -77,6 +77,11 @@
   format: srs
   behavior: singbox
   upstream: &ablock_upstream
+    ablock.json:
+      type: http
+      url: https://raw.githubusercontent.com/Harrykane-der/my-rules/refs/heads/main/ablock.json
+      format: json
+      behavior: singbox
     ablock.yaml:
       type: http
       url: https://raw.githubusercontent.com/Harrykane-der/my-rules/refs/heads/main/ablock.yaml
