@@ -10,7 +10,6 @@ from contextlib import contextmanager
 import re
 import ipaddress
 from datetime import datetime
-from functools import lru_cache
 
 # 配置日志
 logging.basicConfig(
@@ -19,7 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 常量定义
+# 常量定义 - 预编译正则表达式
 DOMAIN_PATTERN = re.compile(
     r'^(?:\.?(\*|[a-zA-Z0-9*](?:[a-zA-Z0-9*-]*[a-zA-Z0-9*])?))'
     r'(?:\.(?:\*|[a-zA-Z0-9*](?:[a-zA-Z0-9*-]*[a-zA-Z0-9*])?))*$'
@@ -33,6 +32,7 @@ SING_BOX_LIST_FIELDS = (
     'domain', 'domain_suffix', 'domain_keyword',
     'domain_regex', 'ip_cidr', 'port', 'port_range', 'network'
 )
+_SB_FIELDS_SET = set(SING_BOX_LIST_FIELDS)
 
 CLASSICAL_TO_SB = {
     'DOMAIN': 'domain',
@@ -51,18 +51,6 @@ class RulesMerger:
         self.config = self._load_config(config_path)
         self.mihomo_path = MIHOMO_PATH
         self.sing_box_path = SING_BOX_PATH
-        self._transformers = {
-            ('classical', 'ipcidr'): self._classical_to_ipcidr,
-            ('classical', 'domain'): self._classical_to_domain,
-            ('ipcidr', 'classical'): self._ipcidr_to_classical,
-            ('domain', 'classical'): self._domain_to_classical,
-            ('classical', 'sing-box'): self._classical_to_sing_box,
-            ('domain', 'sing-box'): self._domain_to_sing_box,
-            ('ipcidr', 'sing-box'): self._ipcidr_to_sing_box,
-            ('sing-box', 'classical'): self._sing_box_to_classical,
-            ('sing-box', 'domain'): self._sing_box_to_domain,
-            ('sing-box', 'ipcidr'): self._sing_box_to_ipcidr
-        }
         self._stats = {'total': 0, 'converted': 0, 'dropped': 0, 'duplicates': 0}
 
     # -------------------- 通用工具方法 --------------------
@@ -99,11 +87,10 @@ class RulesMerger:
         rule = rule.strip()
         if rule.startswith('#'):
             return ''
-        parts = re.split(r'\s+#', rule)
+        parts = re.split(r'\s+#', rule, maxsplit=1)
         return parts[0].strip() if len(parts) > 1 else rule
 
     @staticmethod
-    @lru_cache(maxsize=1024)
     def _get_ipcidr_version(rule: str) -> Optional[int]:
         try:
             return ipaddress.ip_network(rule, strict=False).version
@@ -119,6 +106,7 @@ class RulesMerger:
 
     @staticmethod
     def _normalize_rule_signature(rule: Any) -> str:
+        """生成规则的归一化签名，用于去重"""
         if isinstance(rule, dict):
             return json.dumps(rule, ensure_ascii=False, sort_keys=True)
         if isinstance(rule, str):
@@ -164,7 +152,8 @@ class RulesMerger:
             else:
                 last_start, last_end = merged[-1]
                 if start <= last_end + 1:
-                    merged[-1][1] = max(last_end, end)
+                    if end > last_end:
+                        merged[-1][1] = end
                 else:
                     merged.append([start, end])
         result = []
@@ -175,35 +164,31 @@ class RulesMerger:
                 result.append(f"{start}-{end}")
         return result
 
-    @staticmethod
-    def _deduplicate_domains(domains: List[str]) -> List[str]:
-        """
-        域名智能去重：如果存在更具体的子域名，则移除更宽泛的父域名。
-        例如：['baidu.com', 'ad.baidu.com'] -> ['ad.baidu.com']
-        """
+    def _deduplicate_domains(self, domains: List[str]) -> List[str]:
+        """域名智能去重"""
         if not domains:
             return []
         # 按域名长度降序排序（长的更具体）
-        sorted_domains = sorted(set(domains), key=lambda x: len(x), reverse=True)
+        sorted_domains = sorted(set(domains), key=lambda x: (len(x), x), reverse=True)
         result = []
+        result_lower = []
         for domain in sorted_domains:
-            # 检查当前域名是否是某个已保留域名的子域名
+            domain_lower = domain.lower()
             is_subdomain = False
-            for kept in result:
-                if domain.endswith('.' + kept) or domain == kept:
+            for kept_lower in result_lower:
+                if domain_lower.endswith('.' + kept_lower) or domain_lower == kept_lower:
                     is_subdomain = True
                     break
             if not is_subdomain:
-                # 检查当前域名是否包含其他已保留域名作为后缀
                 should_keep = True
-                for kept in result:
-                    if kept.endswith('.' + domain) or kept == domain:
+                for kept_lower in result_lower:
+                    if kept_lower.endswith('.' + domain_lower) or kept_lower == domain_lower:
                         should_keep = False
                         break
                 if should_keep:
                     result.append(domain)
-        # 按字母顺序排序
-        return sorted(result)
+                    result_lower.append(domain_lower)
+        return sorted(result, key=lambda x: x.lower())
 
     # -------------------- 规则获取与解析 --------------------
     def _fetch_rules_from_source(self, source: Dict, target_behavior: str) -> List[Any]:
@@ -222,10 +207,18 @@ class RulesMerger:
         else:
             return []
 
+        if not raw_rules:
+            return []
+
         converted = []
+        stats_total = 0
+        stats_converted = 0
+        stats_dropped = 0
+
         for rule in raw_rules:
             if rule is None:
                 continue
+            stats_total += 1
             if isinstance(rule, str):
                 cleaned = self._clean_rule(rule)
                 if not cleaned:
@@ -235,11 +228,14 @@ class RulesMerger:
                 rule = cleaned
             transformed = self._transform(rule, source_behavior, target_behavior)
             if not transformed:
-                logger.warning(f"规则转换失败，已丢弃: {rule} (源行为: {source_behavior}, 目标: {target_behavior})")
-                self._stats['dropped'] += 1
+                stats_dropped += 1
                 continue
-            converted.extend(transformed)
-            self._stats['converted'] += 1
+            converted.append(transformed)
+            stats_converted += 1
+
+        self._stats['total'] += stats_total
+        self._stats['converted'] += stats_converted
+        self._stats['dropped'] += stats_dropped
         return converted
 
     def _fetch_http_rules(self, url: str, rule_format: str, behavior: str) -> List[Any]:
@@ -317,26 +313,36 @@ class RulesMerger:
     def _transform(self, rule: Any, source_behavior: str, target_behavior: str) -> List[Any]:
         source_behavior = self._normalize_behavior(source_behavior)
         target_behavior = self._normalize_behavior(target_behavior)
-        self._stats['total'] += 1
 
         if isinstance(rule, dict):
             if target_behavior == 'sing-box':
                 return [rule]
-            transformer = self._transformers.get(('sing-box', target_behavior))
-            if transformer:
-                result = transformer(json.dumps(rule))
-                return result if isinstance(result, list) else [result] if result else []
-            return []
+            result = self._sing_box_to_classical(json.dumps(rule))
+            return result if isinstance(result, list) else [result] if result else []
 
         if not rule:
             return []
         if source_behavior == target_behavior:
             return [rule]
 
-        transformer = self._transformers.get((source_behavior, target_behavior))
-        if not transformer:
+        # 根据源和目标行为选择转换方法
+        if source_behavior == 'classical' and target_behavior == 'sing-box':
+            result = self._classical_to_sing_box(rule)
+        elif source_behavior == 'classical' and target_behavior == 'ipcidr':
+            result = self._classical_to_ipcidr(rule)
+        elif source_behavior == 'classical' and target_behavior == 'domain':
+            result = self._classical_to_domain(rule)
+        elif source_behavior == 'ipcidr' and target_behavior == 'classical':
+            result = self._ipcidr_to_classical(rule)
+        elif source_behavior == 'domain' and target_behavior == 'classical':
+            result = self._domain_to_classical(rule)
+        elif source_behavior == 'domain' and target_behavior == 'sing-box':
+            result = self._domain_to_sing_box(rule)
+        elif source_behavior == 'ipcidr' and target_behavior == 'sing-box':
+            result = self._ipcidr_to_sing_box(rule)
+        else:
             return []
-        result = transformer(rule)
+
         if result is None:
             return []
         return result if isinstance(result, list) else [result] if result else []
@@ -519,8 +525,7 @@ class RulesMerger:
                 unique_items = list(dict.fromkeys(port_items))
                 sorted_items = self._sort_port_items(unique_items)
                 merged_items = self._merge_port_items(sorted_items)
-                joined = "/".join(merged_items)
-                result.append(f"DST-PORT,{joined}")
+                result.append(f"DST-PORT," + "/".join(merged_items))
         return result
 
     def _validate_classical_rule(self, rule: str) -> Optional[str]:
@@ -566,48 +571,85 @@ class RulesMerger:
 
             self._stats = {'total': 0, 'converted': 0, 'dropped': 0, 'duplicates': 0}
 
+            # 批量收集规则
             all_rules = []
             for source_config in config['upstream'].values():
                 rules = self._fetch_rules_from_source(source_config, target_behavior)
-                all_rules.extend(rules)
+                if rules:
+                    all_rules.extend(rules)
 
             logger.info(f"原始输入规则数: {self._stats['total']}, 成功转换: {self._stats['converted']}, 丢弃: {self._stats['dropped']}")
 
+            # 处理规则
             if target_behavior == 'sing-box':
-                dict_rules = []
-                for r in all_rules:
-                    if isinstance(r, dict):
-                        dict_rules.append(r)
-                    elif isinstance(r, str):
-                        parsed = self._parse_sing_box_rule(r)
-                        if parsed:
-                            dict_rules.append(parsed)
-                        else:
-                            logger.warning(f"无法解析为sing-box规则的字符串，已丢弃: {r}")
-                            self._stats['dropped'] += 1
-                    else:
-                        logger.warning(f"未知类型规则，已丢弃: {r}")
-                        self._stats['dropped'] += 1
-
-                final_rules = self._compile_final_sing_box_list(dict_rules)
+                final_rules = self._process_singbox_rules(all_rules)
             else:
-                str_rules = [str(r) for r in all_rules if r is not None]
-                final_rules = self._deduplicate_and_merge_classical(str_rules)
+                final_rules = self._process_classical_rules(all_rules)
 
             logger.info(f"去重后规则数: {len(final_rules)}, 重复项: {self._stats['duplicates']}")
 
-            output_file = config['path']
             self._write_rules(
-                output_file,
+                config['path'],
                 final_rules,
                 target_format,
                 target_behavior,
                 config.get('version', SING_BOX_RULESET_VERSION)
             )
 
+    def _process_singbox_rules(self, all_rules: List[Any]) -> List[Dict]:
+        """处理 Sing-Box 格式规则"""
+        dict_rules = []
+        stats_dropped = 0
+
+        for r in all_rules:
+            if isinstance(r, dict):
+                dict_rules.append(r)
+            elif isinstance(r, str):
+                parsed = self._parse_sing_box_rule(r)
+                if parsed:
+                    dict_rules.append(parsed)
+                else:
+                    stats_dropped += 1
+            else:
+                stats_dropped += 1
+
+        if stats_dropped:
+            self._stats['dropped'] += stats_dropped
+            logger.warning(f"已丢弃 {stats_dropped} 条无法解析的规则")
+
+        # 去重
+        seen = set()
+        unique_dict = []
+        for r in dict_rules:
+            sig = self._normalize_rule_signature(r)
+            if sig not in seen:
+                seen.add(sig)
+                unique_dict.append(r)
+            else:
+                self._stats['duplicates'] += 1
+
+        return self._compile_final_sing_box_list(unique_dict)
+
+    def _process_classical_rules(self, all_rules: List[Any]) -> List[str]:
+        """处理 Classical 格式规则"""
+        str_rules = [str(r) for r in all_rules if r is not None]
+
+        # 去重
+        seen = set()
+        unique_strs = []
+        for r in str_rules:
+            sig = self._normalize_rule_signature(r)
+            if sig not in seen:
+                seen.add(sig)
+                unique_strs.append(r)
+            else:
+                self._stats['duplicates'] += 1
+
+        return self._deduplicate_and_merge_classical(unique_strs)
+
     def _deduplicate_and_merge_classical(self, rules: List[str]) -> List[str]:
         """对 Classical 规则进行智能去重和合并"""
-        # 按前缀分类
+        # 分类
         domain_rules = []
         domain_suffix_rules = []
         domain_keyword_rules = []
@@ -638,44 +680,46 @@ class RulesMerger:
             else:
                 other_rules.append(rule)
 
-        # 域名智能去重
-        deduped_domain = self._deduplicate_domain_rules(domain_rules)
-        deduped_domain_suffix = self._deduplicate_domain_rules(domain_suffix_rules)
+        result = []
 
-        # 端口合并去重
-        merged_dst_port = self._merge_dst_port_rules(dst_port_rules)
+        # 域名智能去重
+        result.extend(self._deduplicate_domain_rules(domain_rules))
+        result.extend(self._deduplicate_domain_rules(domain_suffix_rules))
 
         # 其他规则简单去重
-        def dedup_list(items):
-            seen = set()
-            result = []
-            for item in items:
-                sig = self._normalize_rule_signature(item)
-                if sig not in seen:
-                    seen.add(sig)
-                    result.append(item)
-                else:
-                    self._stats['duplicates'] += 1
-            return result
+        result.extend(self._simple_dedup(domain_keyword_rules))
+        result.extend(self._simple_dedup(domain_regex_rules))
+        result.extend(self._simple_dedup(ip_cidr_rules))
+        result.extend(self._simple_dedup(network_rules))
 
+        # 端口合并
+        if dst_port_rules:
+            merged = self._merge_dst_port_rules(dst_port_rules)
+            if merged:
+                result.append(merged)
+
+        # 其他规则
+        result.extend(self._simple_dedup(other_rules))
+
+        return result
+
+    def _simple_dedup(self, items: List[str]) -> List[str]:
+        """简单去重"""
+        seen = set()
         result = []
-        result.extend(deduped_domain)
-        result.extend(deduped_domain_suffix)
-        result.extend(dedup_list(domain_keyword_rules))
-        result.extend(dedup_list(domain_regex_rules))
-        result.extend(dedup_list(ip_cidr_rules))
-        if merged_dst_port:
-            result.append(merged_dst_port)
-        result.extend(dedup_list(network_rules))
-        result.extend(dedup_list(other_rules))
-
+        for item in items:
+            sig = self._normalize_rule_signature(item)
+            if sig not in seen:
+                seen.add(sig)
+                result.append(item)
+            else:
+                self._stats['duplicates'] += 1
         return result
 
     def _deduplicate_domain_rules(self, rules: List[str]) -> List[str]:
         """对域名规则进行智能去重"""
         if not rules:
             return []
-        # 提取域名
         domain_map = {}
         for rule in rules:
             parts = rule.split(',', 1)
@@ -684,7 +728,6 @@ class RulesMerger:
                 domain_map[domain] = rule
         if not domain_map:
             return rules
-        # 智能去重
         deduped_domains = self._deduplicate_domains(list(domain_map.keys()))
         return [domain_map[d] for d in deduped_domains]
 
@@ -710,7 +753,7 @@ class RulesMerger:
         return "DST-PORT," + "/".join(merged_items)
 
     def _compile_final_sing_box_list(self, rules: List[Dict]) -> List[Dict]:
-        """编译最终 Sing-Box 规则列表（含端口优化和域名去重）"""
+        """编译最终 Sing-Box 规则列表"""
         bucket = {key: [] for key in SING_BOX_LIST_FIELDS}
         passthrough_rules = []
 
@@ -733,21 +776,24 @@ class RulesMerger:
                 all_port_items.append(str(p))
             for pr in bucket['port_range']:
                 all_port_items.append(str(pr).replace(':', '-'))
-            unique_items = list(dict.fromkeys(all_port_items))
-            sorted_items = self._sort_port_items(unique_items)
-            merged_items = self._merge_port_items(sorted_items)
-            new_port = []
-            new_port_range = []
-            for item in merged_items:
-                if '-' in item:
-                    new_port_range.append(item.replace('-', ':'))
-                else:
-                    new_port.append(item)
-            bucket['port'] = new_port
-            bucket['port_range'] = new_port_range
+            if all_port_items:
+                unique_items = list(dict.fromkeys(all_port_items))
+                sorted_items = self._sort_port_items(unique_items)
+                merged_items = self._merge_port_items(sorted_items)
+                new_port = []
+                new_port_range = []
+                for item in merged_items:
+                    if '-' in item:
+                        new_port_range.append(item.replace('-', ':'))
+                    else:
+                        new_port.append(item)
+                bucket['port'] = new_port
+                bucket['port_range'] = new_port_range
 
         compacted = self._compact_sing_box_rules(bucket)
         all_rules = compacted + passthrough_rules
+
+        # 最终去重
         seen = set()
         unique = []
         for r in all_rules:
@@ -757,13 +803,14 @@ class RulesMerger:
                 unique.append(r)
             else:
                 self._stats['duplicates'] += 1
+
         return unique
 
     def _can_compact_sing_box_rule(self, rule: Dict[str, Any]) -> bool:
         if rule.get('type') == 'logical':
             return False
         for key, value in rule.items():
-            if key not in SING_BOX_LIST_FIELDS:
+            if key not in _SB_FIELDS_SET:
                 return False
             values = self._as_list(value)
             if values and not all(isinstance(v, (str, int)) for v in values):
