@@ -670,7 +670,7 @@ class RulesMerger:
         deduped_domain = self._deduplicate_domain_rules(domain_rules)
         deduped_domain_suffix = self._deduplicate_domain_rules(domain_suffix_rules)
 
-        # IP 智能聚合合并 👈 新功能
+        # IP 智能聚合合并
         merged_ip_cidr = self._merge_ip_rules(ip_cidr_rules)
 
         # 端口合并去重
@@ -694,7 +694,7 @@ class RulesMerger:
         result.extend(deduped_domain_suffix)
         result.extend(dedup_list(domain_keyword_rules))
         result.extend(dedup_list(domain_regex_rules))
-        result.extend(merged_ip_cidr)  # 👈 使用聚合后的网段
+        result.extend(merged_ip_cidr)
         if merged_dst_port:
             result.append(merged_dst_port)
         result.extend(dedup_list(network_rules))
@@ -755,15 +755,24 @@ class RulesMerger:
         if bucket['domain_suffix']:
             bucket['domain_suffix'] = self._deduplicate_domains([str(s) for s in bucket['domain_suffix']])
 
-        # IP 智能聚合优化 👈 新功能同样注入到 Sing-Box 输出中
+        # IP 智能聚合优化 👈 修复处：分别处理 IPv4 和 IPv6
         if bucket['ip_cidr']:
-            nets = []
+            v4_nets = []
+            v6_nets = []
             for ip in bucket['ip_cidr']:
                 try:
-                    nets.append(ipaddress.ip_network(str(ip), strict=False))
+                    net = ipaddress.ip_network(str(ip), strict=False)
+                    if net.version == 4:
+                        v4_nets.append(net)
+                    else:
+                        v6_nets.append(net)
                 except ValueError:
                     continue
-            collapsed_nets = list(ipaddress.collapse_addresses(nets))
+            
+            collapsed_v4 = list(ipaddress.collapse_addresses(v4_nets))
+            collapsed_v6 = list(ipaddress.collapse_addresses(v6_nets))
+            collapsed_nets = collapsed_v4 + collapsed_v6
+            
             self._stats['duplicates'] += (len(bucket['ip_cidr']) - len(collapsed_nets))
             bucket['ip_cidr'] = [str(net) for net in collapsed_nets]
 
